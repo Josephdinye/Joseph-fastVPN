@@ -1,8 +1,8 @@
 name: Update Free VPN Configs
 on:
   schedule:
-    # Runs automatically every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
-    - cron: '0 */6 * * *'
+    # Runs automatically every 2 hours
+    - cron: '0 */2 * * *'
   workflow_dispatch: # Allows you to manually click "Run workflow" to test it anytime
 permissions:
   contents: write # Grants GitHub permission to push the generated configs.txt back to your repo
