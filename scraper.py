@@ -54,7 +54,11 @@ def time_remaining():
 # ---------------------------------------------------------------------------
 def fetch_and_clean_configs():
     valid_configs = []
-    protocol_pattern = re.compile(r'^(vless|vmess|trojan|ss)://[^\s]+')
+    # Only VLESS is kept end to end right now, so non-VLESS lines are
+    # dropped at the very first step, before the pre-filter or the real
+    # xray validation ever run. That means the time budget only ever gets
+    # spent on protocols the app actually shows.
+    protocol_pattern = re.compile(r'^vless://[^\s]+')
 
     for url in SOURCES:
         try:
@@ -311,10 +315,12 @@ def parse_ss(uri):
 
 PARSERS = {
     "vless": parse_vless,
-    "vmess": parse_vmess,
-    "trojan": parse_trojan,
-    "ss": parse_ss,
+    # vmess, trojan, and ss are intentionally left out here. They're never
+    # collected by fetch_and_clean_configs() anymore, so nothing would ever
+    # reach these parsers, but keeping the registry restricted to what's
+    # actually in use makes that explicit rather than implicit.
 }
+
 
 
 def extract_host_port(outbound):
