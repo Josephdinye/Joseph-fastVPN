@@ -1,5 +1,19 @@
 import urllib.request
+import urllib.parse
+import urllib.error
 import re
+import json
+import base64
+import subprocess
+import socket
+import time
+import os
+import io
+import stat
+import zipfile
+import tempfile
+import platform
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Trustworthy open-source raw configuration sources
 SOURCES = [
@@ -14,33 +28,409 @@ SOURCES = [
     "https://raw.githubusercontent.com/ninjastrikers/Nexus-nodes/main/configs/all.txt",
 ]
 
+TEST_URL = "https://www.gstatic.com/generate_204"
+CONNECT_TIMEOUT = 8       # seconds to wait for xray to bind its local port
+REQUEST_TIMEOUT = 8       # seconds for the actual proxied request
+MAX_WORKERS = 8           # how many configs to validate at once
+XRAY_DIR = os.path.join(tempfile.gettempdir(), "xray-validator-bin")
+
+
+# ---------------------------------------------------------------------------
+# 1. Fetch and pattern-match raw config lines, same as before.
+# ---------------------------------------------------------------------------
 def fetch_and_clean_configs():
     valid_configs = []
-    
-    # Matching protocol patterns for vless, vmess, trojan, and ss
     protocol_pattern = re.compile(r'^(vless|vmess|trojan|ss)://[^\s]+')
 
     for url in SOURCES:
         try:
             print(f"Fetching from: {url}")
-            # Use a basic User-Agent to prevent getting blocked by CDNs
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=15) as response:
-                raw_data = response.read().decode('utf-8')
-                
+                raw_data = response.read().decode('utf-8', errors='ignore')
+
                 for line in raw_data.splitlines():
                     cleaned_line = line.strip()
                     if protocol_pattern.match(cleaned_line) and cleaned_line not in valid_configs:
                         valid_configs.append(cleaned_line)
-                        
+
         except Exception as e:
             print(f"Failed to read from source {url}: {e}")
 
-    # Write the unique, extracted lines directly to a text file
+    return valid_configs
+
+
+# ---------------------------------------------------------------------------
+# 2. Get a working xray binary onto disk. Downloads once per run (or reuses
+#    a cached copy if the workflow caches XRAY_DIR between runs).
+# ---------------------------------------------------------------------------
+def ensure_xray_binary():
+    binary_name = "xray.exe" if platform.system() == "Windows" else "xray"
+    binary_path = os.path.join(XRAY_DIR, binary_name)
+
+    if os.path.exists(binary_path):
+        return binary_path
+
+    os.makedirs(XRAY_DIR, exist_ok=True)
+
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Linux" and machine in ("x86_64", "amd64"):
+        asset_suffix = "linux-64.zip"
+    elif system == "Linux" and "arm" in machine:
+        asset_suffix = "linux-arm64-v8a.zip"
+    elif system == "Darwin":
+        asset_suffix = "macos-64.zip"
+    elif system == "Windows":
+        asset_suffix = "windows-64.zip"
+    else:
+        raise RuntimeError(f"Unsupported platform for xray download: {system}/{machine}")
+
+    api_req = urllib.request.Request(
+        "https://api.github.com/repos/XTLS/Xray-core/releases/latest",
+        headers={'User-Agent': 'Mozilla/5.0'}
+    )
+    with urllib.request.urlopen(api_req, timeout=15) as resp:
+        release = json.loads(resp.read().decode('utf-8'))
+
+    asset_url = None
+    for asset in release.get("assets", []):
+        if asset["name"].endswith(asset_suffix):
+            asset_url = asset["browser_download_url"]
+            break
+
+    if not asset_url:
+        raise RuntimeError(f"Could not find an Xray-core release asset ending in {asset_suffix}")
+
+    print(f"Downloading xray binary from: {asset_url}")
+    dl_req = urllib.request.Request(asset_url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(dl_req, timeout=60) as resp:
+        zip_bytes = resp.read()
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        zf.extractall(XRAY_DIR)
+
+    if not os.path.exists(binary_path):
+        raise RuntimeError(f"Extracted archive but did not find expected binary at {binary_path}")
+
+    st = os.stat(binary_path)
+    os.chmod(binary_path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    return binary_path
+
+
+# ---------------------------------------------------------------------------
+# 3. Parse each supported URI scheme into an xray outbound block.
+#    Returns None on anything malformed so the caller can just skip it.
+# ---------------------------------------------------------------------------
+def _split_fragment(uri):
+    if '#' in uri:
+        base, label = uri.split('#', 1)
+        return base, urllib.parse.unquote(label)
+    return uri, ''
+
+
+def parse_vless(uri):
+    try:
+        parsed = urllib.parse.urlsplit(uri)
+        uuid = parsed.username
+        host = parsed.hostname
+        port = parsed.port
+        params = urllib.parse.parse_qs(parsed.query)
+
+        def p(key, default=None):
+            return params.get(key, [default])[0]
+
+        network = p("type", "tcp")
+        security = p("security", "none")
+        flow = p("flow") or None
+
+        stream_settings = {"network": network, "security": security}
+        if security == "reality":
+            stream_settings["realitySettings"] = {
+                "show": False,
+                "fingerprint": p("fp", "chrome"),
+                "serverName": p("sni", ""),
+                "publicKey": p("pbk", ""),
+                "shortId": p("sid", "")
+            }
+        elif security == "tls":
+            stream_settings["tlsSettings"] = {
+                "serverName": p("sni", host),
+                "fingerprint": p("fp", "chrome")
+            }
+        if network == "ws":
+            stream_settings["wsSettings"] = {
+                "path": p("path", "/"),
+                "headers": {"Host": p("host")} if p("host") else {}
+            }
+        elif network == "grpc":
+            stream_settings["grpcSettings"] = {"serviceName": p("serviceName", "")}
+
+        outbound = {
+            "protocol": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": host,
+                    "port": port,
+                    "users": [{"id": uuid, "encryption": "none", "flow": flow}]
+                }]
+            },
+            "streamSettings": stream_settings
+        }
+        return outbound
+    except Exception:
+        return None
+
+
+def parse_trojan(uri):
+    try:
+        parsed = urllib.parse.urlsplit(uri)
+        password = parsed.username
+        host = parsed.hostname
+        port = parsed.port
+        params = urllib.parse.parse_qs(parsed.query)
+
+        def p(key, default=None):
+            return params.get(key, [default])[0]
+
+        network = p("type", "tcp")
+        security = p("security", "tls")
+
+        stream_settings = {"network": network, "security": security}
+        if security == "tls":
+            stream_settings["tlsSettings"] = {"serverName": p("sni", host)}
+        if network == "ws":
+            stream_settings["wsSettings"] = {
+                "path": p("path", "/"),
+                "headers": {"Host": p("host")} if p("host") else {}
+            }
+
+        outbound = {
+            "protocol": "trojan",
+            "settings": {
+                "servers": [{"address": host, "port": port, "password": password}]
+            },
+            "streamSettings": stream_settings
+        }
+        return outbound
+    except Exception:
+        return None
+
+
+def parse_vmess(uri):
+    try:
+        payload = uri[len("vmess://"):]
+        payload, _ = _split_fragment(payload)
+        padded = payload + "=" * (-len(payload) % 4)
+        data = json.loads(base64.b64decode(padded).decode('utf-8'))
+
+        host = data.get("add")
+        port = int(data.get("port"))
+        uid = data.get("id")
+        alter_id = int(data.get("aid", 0) or 0)
+        network = data.get("net", "tcp")
+        tls_on = data.get("tls", "") == "tls"
+
+        stream_settings = {"network": network, "security": "tls" if tls_on else "none"}
+        if tls_on:
+            stream_settings["tlsSettings"] = {"serverName": data.get("sni") or data.get("host") or host}
+        if network == "ws":
+            stream_settings["wsSettings"] = {
+                "path": data.get("path", "/"),
+                "headers": {"Host": data.get("host")} if data.get("host") else {}
+            }
+        elif network == "grpc":
+            stream_settings["grpcSettings"] = {"serviceName": data.get("path", "")}
+
+        outbound = {
+            "protocol": "vmess",
+            "settings": {
+                "vnext": [{
+                    "address": host,
+                    "port": port,
+                    "users": [{"id": uid, "alterId": alter_id, "security": "auto"}]
+                }]
+            },
+            "streamSettings": stream_settings
+        }
+        return outbound
+    except Exception:
+        return None
+
+
+def parse_ss(uri):
+    try:
+        body = uri[len("ss://"):]
+        body, _ = _split_fragment(body)
+        # Some params after '?' are optional plugin info we don't support; drop them.
+        if '?' in body:
+            body = body.split('?', 1)[0]
+
+        if '@' in body:
+            userinfo, hostport = body.rsplit('@', 1)
+            try:
+                padded = userinfo + "=" * (-len(userinfo) % 4)
+                decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
+                method, password = decoded.split(':', 1)
+            except Exception:
+                method, password = userinfo.split(':', 1)
+        else:
+            padded = body + "=" * (-len(body) % 4)
+            decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
+            creds, hostport = decoded.rsplit('@', 1)
+            method, password = creds.split(':', 1)
+
+        host, port_str = hostport.rsplit(':', 1)
+        port = int(port_str)
+
+        outbound = {
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{"address": host, "port": port, "method": method, "password": password}]
+            }
+        }
+        return outbound
+    except Exception:
+        return None
+
+
+PARSERS = {
+    "vless": parse_vless,
+    "vmess": parse_vmess,
+    "trojan": parse_trojan,
+    "ss": parse_ss,
+}
+
+
+def build_test_config(outbound, local_port):
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{
+            "port": local_port,
+            "protocol": "http",
+            "settings": {"auth": "noauth", "udp": True}
+        }],
+        "outbounds": [outbound]
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. Validate one config: spin up xray on a scratch port, route a real
+#    request through it, tear it down. This is what actually catches a dead
+#    or credential-expired server, not just an open TCP port.
+# ---------------------------------------------------------------------------
+def wait_for_port(port, timeout_s):
+    start = time.time()
+    while time.time() - start < timeout_s:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
+def request_through_proxy(port, timeout_s):
+    proxy_handler = urllib.request.ProxyHandler({
+        "http": f"http://127.0.0.1:{port}",
+        "https": f"http://127.0.0.1:{port}",
+    })
+    opener = urllib.request.build_opener(proxy_handler)
+    req = urllib.request.Request(TEST_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with opener.open(req, timeout=timeout_s) as resp:
+        return resp.status < 400
+
+
+def validate_config(raw_line, xray_bin, local_port):
+    scheme = raw_line.split("://", 1)[0]
+    parser = PARSERS.get(scheme)
+    if not parser:
+        return False
+
+    outbound = parser(raw_line)
+    if not outbound:
+        return False
+
+    config_path = os.path.join(tempfile.gettempdir(), f"xray-validate-{local_port}.json")
+    process = None
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(build_test_config(outbound, local_port), f)
+
+        process = subprocess.Popen(
+            [xray_bin, "run", "-c", config_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        if not wait_for_port(local_port, CONNECT_TIMEOUT):
+            return False
+
+        return request_through_proxy(local_port, REQUEST_TIMEOUT)
+    except Exception:
+        return False
+    finally:
+        if process:
+            process.kill()
+            try:
+                process.wait(timeout=3)
+            except Exception:
+                pass
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
+
+
+def validate_all(configs, xray_bin, max_workers=MAX_WORKERS):
+    working = []
+    base_port = 21000
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for i, line in enumerate(configs):
+            port = base_port + i
+            futures[pool.submit(validate_config, line, xray_bin, port)] = line
+
+        done_count = 0
+        for future in as_completed(futures):
+            done_count += 1
+            line = futures[future]
+            try:
+                ok = future.result()
+            except Exception:
+                ok = False
+            status = "OK" if ok else "dead"
+            print(f"[{done_count}/{len(configs)}] {status}: {line[:70]}...")
+            if ok:
+                working.append(line)
+
+    return working
+
+
+def main():
+    print("Step 1: collecting candidate configs from sources...")
+    candidates = fetch_and_clean_configs()
+    print(f"Collected {len(candidates)} unique candidate configurations.")
+
+    if not candidates:
+        print("Nothing to validate, writing empty configs.txt.")
+        with open("configs.txt", "w", encoding="utf-8") as f:
+            f.write("")
+        return
+
+    print("Step 2: preparing xray binary for validation...")
+    xray_bin = ensure_xray_binary()
+
+    print("Step 3: validating each candidate through a real proxy request...")
+    working_configs = validate_all(candidates, xray_bin)
+
     with open("configs.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(valid_configs))
-        
-    print(f"Successfully compiled {len(valid_configs)} unique configurations!")
+        f.write("\n".join(working_configs))
+
+    print(f"Done. {len(working_configs)} of {len(candidates)} candidates are online and were written to configs.txt.")
+
 
 if __name__ == "__main__":
-    fetch_and_clean_configs()
+    main()
