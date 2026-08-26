@@ -29,10 +29,24 @@ SOURCES = [
 ]
 
 TEST_URL = "https://www.gstatic.com/generate_204"
-CONNECT_TIMEOUT = 8       # seconds to wait for xray to bind its local port
-REQUEST_TIMEOUT = 8       # seconds for the actual proxied request
-MAX_WORKERS = 8           # how many configs to validate at once
+CONNECT_TIMEOUT = 3        # seconds to wait for xray to bind its local port
+REQUEST_TIMEOUT = 6        # seconds for the actual proxied request through xray
+PREFILTER_TIMEOUT = 3      # seconds for the cheap plain TCP reachability check
+PREFILTER_WORKERS = 100    # plain TCP connects are cheap, so run a lot at once
+VALIDATE_WORKERS = 25      # real xray handshakes are expensive, so run fewer at once
 XRAY_DIR = os.path.join(tempfile.gettempdir(), "xray-validator-bin")
+
+# Hard wall clock budget for the whole script, independent of how many
+# candidates there are. When this is hit, whatever has already validated
+# successfully gets written out immediately and the process exits without
+# waiting on any still-running xray subprocess. This is what keeps the
+# workflow from being killed with nothing committed, the way it just was.
+SCRIPT_DEADLINE_SECONDS = 28 * 60
+SCRIPT_START_TIME = time.time()
+
+
+def time_remaining():
+    return SCRIPT_DEADLINE_SECONDS - (time.time() - SCRIPT_START_TIME)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +317,65 @@ PARSERS = {
 }
 
 
+def extract_host_port(outbound):
+    proto = outbound["protocol"]
+    if proto in ("vless", "vmess"):
+        server = outbound["settings"]["vnext"][0]
+    else:
+        server = outbound["settings"]["servers"][0]
+    return server["address"], server["port"]
+
+
+def parse_line(line):
+    scheme = line.split("://", 1)[0]
+    parser = PARSERS.get(scheme)
+    if not parser:
+        return None
+    return parser(line)
+
+
+def tcp_reachable(host, port, timeout):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Stage A: cheap plain TCP reachability check, run at high concurrency.
+# This throws out hosts that are simply offline or unreachable before we
+# ever pay the cost of spinning up an xray process for them. Parsing each
+# URI here too, so stage B does not have to parse twice.
+# ---------------------------------------------------------------------------
+def prefilter_reachable(configs, max_workers=PREFILTER_WORKERS, timeout=PREFILTER_TIMEOUT):
+    reachable_lines = []
+    parsed_outbounds = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for line in configs:
+            outbound = parse_line(line)
+            if not outbound:
+                continue
+            try:
+                host, port = extract_host_port(outbound)
+            except Exception:
+                continue
+            parsed_outbounds[line] = outbound
+            futures[pool.submit(tcp_reachable, host, port, timeout)] = line
+
+        for future in as_completed(futures):
+            line = futures[future]
+            try:
+                if future.result():
+                    reachable_lines.append(line)
+            except Exception:
+                pass
+
+    return reachable_lines, parsed_outbounds
+
+
 def build_test_config(outbound, local_port):
     return {
         "log": {"loglevel": "warning"},
@@ -342,16 +415,7 @@ def request_through_proxy(port, timeout_s):
         return resp.status < 400
 
 
-def validate_config(raw_line, xray_bin, local_port):
-    scheme = raw_line.split("://", 1)[0]
-    parser = PARSERS.get(scheme)
-    if not parser:
-        return False
-
-    outbound = parser(raw_line)
-    if not outbound:
-        return False
-
+def validate_config(outbound, xray_bin, local_port):
     config_path = os.path.join(tempfile.gettempdir(), f"xray-validate-{local_port}.json")
     process = None
     try:
@@ -383,29 +447,50 @@ def validate_config(raw_line, xray_bin, local_port):
             pass
 
 
-def validate_all(configs, xray_bin, max_workers=MAX_WORKERS):
+def write_and_exit(working_configs, reason):
+    with open("configs.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(working_configs))
+    print(f"{reason} Wrote {len(working_configs)} working configs to configs.txt.")
+    # os._exit skips waiting on any still-running worker thread or xray
+    # subprocess. Regular sys.exit would block here until every submitted
+    # task finishes, which is exactly what caused the job to run past its
+    # time limit with nothing committed. The CI runner tears the container
+    # down right after this step anyway, so any orphaned xray process is
+    # not a concern.
+    os._exit(0)
+
+
+def validate_all(parsed_outbounds, xray_bin, max_workers=VALIDATE_WORKERS):
     working = []
+    lines = list(parsed_outbounds.keys())
     base_port = 21000
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {}
-        for i, line in enumerate(configs):
-            port = base_port + i
-            futures[pool.submit(validate_config, line, xray_bin, port)] = line
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    futures = {}
+    for i, line in enumerate(lines):
+        port = base_port + i
+        futures[pool.submit(validate_config, parsed_outbounds[line], xray_bin, port)] = line
 
-        done_count = 0
-        for future in as_completed(futures):
-            done_count += 1
-            line = futures[future]
-            try:
-                ok = future.result()
-            except Exception:
-                ok = False
-            status = "OK" if ok else "dead"
-            print(f"[{done_count}/{len(configs)}] {status}: {line[:70]}...")
-            if ok:
-                working.append(line)
+    done_count = 0
+    total = len(futures)
+    for future in as_completed(futures):
+        done_count += 1
+        line = futures[future]
+        try:
+            ok = future.result()
+        except Exception:
+            ok = False
+        status = "OK" if ok else "dead"
+        print(f"[{done_count}/{total}] {status}: {line[:70]}...")
+        if ok:
+            working.append(line)
 
+        if time_remaining() <= 0:
+            print("Time budget exhausted mid validation, stopping early with what has passed so far.")
+            pool.shutdown(wait=False, cancel_futures=True)
+            write_and_exit(working, "Stopped early due to time budget.")
+
+    pool.shutdown(wait=True)
     return working
 
 
@@ -415,21 +500,29 @@ def main():
     print(f"Collected {len(candidates)} unique candidate configurations.")
 
     if not candidates:
-        print("Nothing to validate, writing empty configs.txt.")
-        with open("configs.txt", "w", encoding="utf-8") as f:
-            f.write("")
-        return
+        write_and_exit([], "Nothing to validate.")
+
+    if time_remaining() <= 0:
+        write_and_exit([], "Ran out of time before validation could start.")
 
     print("Step 2: preparing xray binary for validation...")
     xray_bin = ensure_xray_binary()
 
-    print("Step 3: validating each candidate through a real proxy request...")
-    working_configs = validate_all(candidates, xray_bin)
+    print(f"Step 3: quick reachability pre-filter across {len(candidates)} candidates...")
+    reachable_lines, parsed_outbounds = prefilter_reachable(candidates)
+    print(f"{len(reachable_lines)} of {len(candidates)} candidates are reachable, moving to full validation.")
 
-    with open("configs.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(working_configs))
+    if not reachable_lines:
+        write_and_exit([], "No candidates passed the reachability pre-filter.")
 
-    print(f"Done. {len(working_configs)} of {len(candidates)} candidates are online and were written to configs.txt.")
+    if time_remaining() <= 0:
+        write_and_exit([], "Ran out of time during the reachability pre-filter.")
+
+    print("Step 4: validating reachable candidates through a real proxy request...")
+    reachable_outbounds = {line: parsed_outbounds[line] for line in reachable_lines}
+    working_configs = validate_all(reachable_outbounds, xray_bin)
+
+    write_and_exit(working_configs, "Finished full validation pass.")
 
 
 if __name__ == "__main__":
