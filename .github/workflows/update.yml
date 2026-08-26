@@ -9,7 +9,7 @@ permissions:
 jobs:
   scrape-and-update:
     runs-on: ubuntu-latest
-    timeout-minutes: 25 # validating each config through a real xray handshake takes longer than a plain scrape
+    timeout-minutes: 35 # scraper.py self-limits its validation pass to 28 minutes and always writes configs.txt before exiting; this is just a safety margin on top of that
     steps:
     - name: Checkout Repository Code
       uses: actions/checkout@v4
