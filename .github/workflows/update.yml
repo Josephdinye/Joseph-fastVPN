@@ -19,7 +19,7 @@ on:
     # load is worst right at the top and bottom of the hour since that is
     # when the most other repos' workflows are also queued. Landing a few
     # minutes off that mark makes runs noticeably more consistent.
-    - cron: '7,37 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch: {} # lets you click "Run workflow" manually to test anytime
 
 permissions:
