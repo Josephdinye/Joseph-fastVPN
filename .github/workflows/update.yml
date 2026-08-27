@@ -1,5 +1,4 @@
 name: Update Free VPN Configs
-
 # IMPORTANT: this file only gets its schedule read by GitHub if it lives on
 # your repository's DEFAULT branch (normally "main"). A copy on any other
 # branch will run fine when you click "Run workflow" manually, but the cron
@@ -19,16 +18,17 @@ on:
     # load is worst right at the top and bottom of the hour since that is
     # when the most other repos' workflows are also queued. Landing a few
     # minutes off that mark makes runs noticeably more consistent.
+    #
+    # This line is the actual trigger value GitHub reads. Double check it
+    # matches this comment after any future edit; a stale comment next to
+    # a wrong cron expression is exactly what caused the last mismatch.
     - cron: '0 * * * *'
-  workflow_dispatch: {} # lets you click "Run workflow" manually to test anytime
-
+  workflow_dispatch: {} # lets you click "Run workflow" manually to test anytime; separate from and does not replace the schedule above
 permissions:
   contents: write # needed to push the updated configs.txt back to the repo
-
 concurrency:
   group: update-free-vpn-configs
   cancel-in-progress: true # if a run is still going when the next one is due, drop the old one instead of piling up
-
 jobs:
   scrape-and-update:
     runs-on: ubuntu-latest
@@ -36,15 +36,12 @@ jobs:
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
-
       - name: Set Up Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
       - name: Run Proxy Scraper And Validator Script
         run: python scraper.py
-
       - name: Commit and Push Updated Configurations
         run: |
           set -euo pipefail
