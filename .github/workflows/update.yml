@@ -5,7 +5,7 @@ name: Update Free VPN Configs
 # branch will run fine when you click "Run workflow" manually, but the cron
 # trigger below will never fire on its own. If you are not 100% sure this
 # exact file is committed to main, that is almost certainly why it has only
-# ever run when you triggered it by hand. 
+# ever run when you triggered it by hand.
 #
 # GitHub also auto-disables the schedule on any workflow if the repository
 # goes 60 days with no commits at all (not just to this file). If it was
