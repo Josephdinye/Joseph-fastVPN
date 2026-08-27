@@ -1,91 +1,57 @@
-name: proxy-config
-# IMPORTANT: this file must live on the default branch (main), otherwise cron will not run.
-# Work happens on the proxy-config branch: checkout switches to it, commit goes there too.
+name: Update Free VPN Configs
+
+# This file MUST live on main (default branch) so the schedule works.
+# The job itself works on the proxy-config branch.
+
 on:
   schedule:
-    - cron: '0 * * * *'   # every hour (UTC)
+    - cron: '0 * * * *'          # every hour (UTC)
   workflow_dispatch: {}
+
 concurrency:
   group: proxy-config
   cancel-in-progress: true
+
 permissions:
   contents: write
+
 jobs:
-  # Each source = separate parallel job (matrix): fetch + xray-knife test.
-  test:
+  scrape-and-update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        source: ['26', '1', '6', '22', '23', '24', '25']
-    env:
-      XK_VERSION: v10.0.0
+    timeout-minutes: 35
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout proxy-config branch
+        uses: actions/checkout@v4
         with:
           ref: proxy-config
           fetch-depth: 1
-      - name: Cache xray-knife
-        id: cache-xk
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache xray binary
         uses: actions/cache@v4
         with:
-          path: bin
-          key: xray-knife-${{ env.XK_VERSION }}-linux-64
-      - name: Install xray-knife
-        if: steps.cache-xk.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p bin
-          url="https://github.com/lilendian0x00/xray-knife/releases/download/${XK_VERSION}/Xray-knife-linux-64.zip"
-          curl -fsSL "$url" -o xk.zip
-          unzip -o xk.zip -d bin
-          binpath="$(find bin -type f -iname 'xray-knife*' ! -iname '*.zip' | head -n1)"
-          [ "$binpath" = "bin/xray-knife" ] || cp "$binpath" bin/xray-knife
-          chmod +x bin/xray-knife
-      - name: Add xray-knife to PATH
-        run: echo "$PWD/bin" >> "$GITHUB_PATH"
-      - name: Fetch source ${{ matrix.source }}
-        run: bash scripts/fetch.sh "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/githubmirror/${{ matrix.source }}.txt"
-      - name: Filter (Cloudflare + speed) — only active servers
-        run: bash scripts/filter.sh
-      - name: Upload per-source results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: results-${{ matrix.source }}
-          path: results.csv
-          if-no-files-found: ignore
-          retention-days: 1
-  # Merge results from all sources, dedup, select, commit.
-  merge:
-    needs: test
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: proxy-config
-          fetch-depth: 0
-      - name: Download all per-source results
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: results-*
-      - name: Merge & build output (active only)
-        env:
-          ART_DIR: artifacts
-        run: bash scripts/merge.sh
-      - name: Commit results
+          path: /tmp/xray-validator-bin
+          key: xray-core-linux-64
+
+      - name: Run scraper (active servers only)
+        run: python scraper.py
+
+      - name: Commit and push to proxy-config
         run: |
           set -euo pipefail
           git config user.name  "Josephdinye"
           git config user.email "201128931+Josephdinye@users.noreply.github.com"
-          git add output/
-          if git diff --cached --quiet; then
-            echo "No changes in output/."
+
+          git add configs.txt
+
+          if git diff --staged --quiet; then
+            echo "No changes — skipping commit."
           else
-            git commit -m "chore: update filtered active list [skip ci]"
-            git push origin "HEAD:proxy-config"
+            git commit -m "chore: update active free VPN configs [skip ci]"
+            git push origin HEAD:proxy-config
           fi
