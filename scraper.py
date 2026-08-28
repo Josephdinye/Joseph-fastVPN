@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+scraper.py — Collect + validate VLESS configs that look like normal HTTPS traffic
+(optimized for heavy DPI / TSPU environments)
+"""
+
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -15,7 +21,9 @@ import tempfile
 import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Trustworthy open-source raw configuration sources
+# ---------------------------------------------------------------------------
+# Sources (public free lists)
+# ---------------------------------------------------------------------------
 SOURCES = [
     "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt",
     "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/fast/configs.txt",
@@ -29,54 +37,51 @@ SOURCES = [
 ]
 
 TEST_URL = "https://www.gstatic.com/generate_204"
-CONNECT_TIMEOUT = 3        # seconds to wait for xray to bind its local port
-REQUEST_TIMEOUT = 6        # seconds for the actual proxied request through xray
-PREFILTER_TIMEOUT = 3      # seconds for the cheap plain TCP reachability check
-PREFILTER_WORKERS = 100    # plain TCP connects are cheap, so run a lot at once
-VALIDATE_WORKERS = 25      # real xray handshakes are expensive, so run fewer at once
+CONNECT_TIMEOUT = 3
+REQUEST_TIMEOUT = 6
+PREFILTER_TIMEOUT = 3
+PREFILTER_WORKERS = 100
+VALIDATE_WORKERS = 25
 XRAY_DIR = os.path.join(tempfile.gettempdir(), "xray-validator-bin")
-
 SCRIPT_DEADLINE_SECONDS = 28 * 60
 SCRIPT_START_TIME = time.time()
-
 
 def time_remaining():
     return SCRIPT_DEADLINE_SECONDS - (time.time() - SCRIPT_START_TIME)
 
-
+# ---------------------------------------------------------------------------
+# Fetch
+# ---------------------------------------------------------------------------
 def fetch_and_clean_configs():
     valid_configs = []
     protocol_pattern = re.compile(r'^vless://[^\s]+')
-
     for url in SOURCES:
         try:
             print(f"Fetching from: {url}")
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=15) as response:
                 raw_data = response.read().decode('utf-8', errors='ignore')
-
                 for line in raw_data.splitlines():
                     cleaned_line = line.strip()
                     if protocol_pattern.match(cleaned_line) and cleaned_line not in valid_configs:
                         valid_configs.append(cleaned_line)
-
         except Exception as e:
             print(f"Failed to read from source {url}: {e}")
-
     return valid_configs
 
-
+# ---------------------------------------------------------------------------
+# Xray binary
+# ---------------------------------------------------------------------------
 def ensure_xray_binary():
     binary_name = "xray.exe" if platform.system() == "Windows" else "xray"
     binary_path = os.path.join(XRAY_DIR, binary_name)
-
     if os.path.exists(binary_path):
         return binary_path
 
     os.makedirs(XRAY_DIR, exist_ok=True)
-
     system = platform.system()
     machine = platform.machine().lower()
+
     if system == "Linux" and machine in ("x86_64", "amd64"):
         asset_suffix = "linux-64.zip"
     elif system == "Linux" and "arm" in machine:
@@ -100,7 +105,6 @@ def ensure_xray_binary():
         if asset["name"].endswith(asset_suffix):
             asset_url = asset["browser_download_url"]
             break
-
     if not asset_url:
         raise RuntimeError(f"Could not find an Xray-core release asset ending in {asset_suffix}")
 
@@ -117,61 +121,102 @@ def ensure_xray_binary():
 
     st = os.stat(binary_path)
     os.chmod(binary_path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
     return binary_path
 
-
-def _split_fragment(uri):
-    if '#' in uri:
-        base, label = uri.split('#', 1)
-        return base, urllib.parse.unquote(label)
-    return uri, ''
-
-
+# ---------------------------------------------------------------------------
+# VLESS parser — DPI-resistant defaults
+# ---------------------------------------------------------------------------
 def parse_vless(uri):
+    """
+    Parse a vless:// URI into an Xray outbound object.
+    Forces / prefers settings that make the handshake look like normal browser HTTPS
+    (REALITY + chrome fingerprint + Vision flow when available).
+    """
     try:
         parsed = urllib.parse.urlsplit(uri)
         uuid = parsed.username
         host = parsed.hostname
-        port = parsed.port
+        port = parsed.port or 443
         params = urllib.parse.parse_qs(parsed.query)
 
         def p(key, default=None):
             return params.get(key, [default])[0]
 
-        network = p("type", "tcp")
-        security = p("security", "none")
+        network = (p("type") or "tcp").lower()
+        security = (p("security") or "none").lower()
         flow = p("flow") or None
+        sni = p("sni") or p("host") or host
+        fp = (p("fp") or "chrome").lower()          # force browser-like fingerprint
+        pbk = p("pbk") or p("publicKey") or ""
+        sid = p("sid") or p("shortId") or ""
+        path = p("path") or "/"
+        service_name = p("serviceName") or ""
 
-        stream_settings = {"network": network, "security": security}
+        # Only keep configs that can reasonably look like real HTTPS
+        if security not in ("reality", "tls"):
+            return None
+        if security == "reality" and not pbk:
+            return None
+
+        # Prefer Vision when the config already advertises it
+        if flow and "vision" not in flow.lower():
+            flow = None          # drop non-Vision flows for cleaner fingerprint
+
+        stream_settings = {
+            "network": network,
+            "security": security,
+        }
+
         if security == "reality":
             stream_settings["realitySettings"] = {
                 "show": False,
-                "fingerprint": p("fp", "chrome"),
-                "serverName": p("sni", ""),
-                "publicKey": p("pbk", ""),
-                "shortId": p("sid", "")
+                "fingerprint": fp if fp in ("chrome", "firefox", "safari", "ios", "android", "edge") else "chrome",
+                "serverName": sni,
+                "publicKey": pbk,
+                "shortId": sid,
+                # spiderX is optional; leave empty unless the source provides it
             }
         elif security == "tls":
             stream_settings["tlsSettings"] = {
-                "serverName": p("sni", host),
-                "fingerprint": p("fp", "chrome")
+                "serverName": sni,
+                "fingerprint": fp if fp in ("chrome", "firefox", "safari", "ios", "android", "edge") else "chrome",
+                "allowInsecure": False,
             }
+
         if network == "ws":
+            headers = {}
+            host_header = p("host")
+            if host_header:
+                headers["Host"] = host_header
             stream_settings["wsSettings"] = {
-                "path": p("path", "/"),
-                "headers": {"Host": p("host")} if p("host") else {}
+                "path": path,
+                "headers": headers,
             }
         elif network == "grpc":
-            stream_settings["grpcSettings"] = {"serviceName": p("serviceName", "")}
+            stream_settings["grpcSettings"] = {
+                "serviceName": service_name,
+            }
+        elif network in ("tcp", "raw"):
+            # pure TCP + REALITY/TLS is the cleanest for DPI
+            pass
+        else:
+            # unknown / less desirable transport → skip for heavy DPI targets
+            return None
+
+        user = {
+            "id": uuid,
+            "encryption": "none",
+        }
+        if flow:
+            user["flow"] = flow
 
         outbound = {
             "protocol": "vless",
             "settings": {
                 "vnext": [{
                     "address": host,
-                    "port": port,
-                    "users": [{"id": uuid, "encryption": "none", "flow": flow}]
+                    "port": int(port),
+                    "users": [user]
                 }]
             },
             "streamSettings": stream_settings
@@ -180,11 +225,9 @@ def parse_vless(uri):
     except Exception:
         return None
 
-
 PARSERS = {
     "vless": parse_vless,
 }
-
 
 def extract_host_port(outbound):
     proto = outbound["protocol"]
@@ -194,15 +237,16 @@ def extract_host_port(outbound):
         server = outbound["settings"]["servers"][0]
     return server["address"], server["port"]
 
-
 def parse_line(line):
-    scheme = line.split("://", 1)[0]
+    scheme = line.split("://", 1)[0].lower()
     parser = PARSERS.get(scheme)
     if not parser:
         return None
     return parser(line)
 
-
+# ---------------------------------------------------------------------------
+# Reachability pre-filter
+# ---------------------------------------------------------------------------
 def tcp_reachable(host, port, timeout):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -210,11 +254,9 @@ def tcp_reachable(host, port, timeout):
     except Exception:
         return False
 
-
 def prefilter_reachable(configs, max_workers=PREFILTER_WORKERS, timeout=PREFILTER_TIMEOUT):
     reachable_lines = []
     parsed_outbounds = {}
-
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {}
         for line in configs:
@@ -235,10 +277,11 @@ def prefilter_reachable(configs, max_workers=PREFILTER_WORKERS, timeout=PREFILTE
                     reachable_lines.append(line)
             except Exception:
                 pass
-
     return reachable_lines, parsed_outbounds
 
-
+# ---------------------------------------------------------------------------
+# Full validation with real Xray
+# ---------------------------------------------------------------------------
 def build_test_config(outbound, local_port):
     return {
         "log": {"loglevel": "warning"},
@@ -250,7 +293,6 @@ def build_test_config(outbound, local_port):
         "outbounds": [outbound]
     }
 
-
 def wait_for_port(port, timeout_s):
     start = time.time()
     while time.time() - start < timeout_s:
@@ -261,7 +303,6 @@ def wait_for_port(port, timeout_s):
             time.sleep(0.1)
     return False
 
-
 def request_through_proxy(port, timeout_s):
     proxy_handler = urllib.request.ProxyHandler({
         "http": f"http://127.0.0.1:{port}",
@@ -271,7 +312,6 @@ def request_through_proxy(port, timeout_s):
     req = urllib.request.Request(TEST_URL, headers={"User-Agent": "Mozilla/5.0"})
     with opener.open(req, timeout=timeout_s) as resp:
         return resp.status < 400
-
 
 def validate_config(outbound, xray_bin, local_port):
     config_path = os.path.join(tempfile.gettempdir(), f"xray-validate-{local_port}.json")
@@ -285,10 +325,8 @@ def validate_config(outbound, xray_bin, local_port):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-
         if not wait_for_port(local_port, CONNECT_TIMEOUT):
             return False
-
         return request_through_proxy(local_port, REQUEST_TIMEOUT)
     except Exception:
         return False
@@ -304,19 +342,16 @@ def validate_config(outbound, xray_bin, local_port):
         except OSError:
             pass
 
-
 def write_and_exit(working_configs, reason):
     with open("configs.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(working_configs))
     print(f"{reason} Wrote {len(working_configs)} working configs to configs.txt.")
     os._exit(0)
 
-
 def validate_all(parsed_outbounds, xray_bin, max_workers=VALIDATE_WORKERS):
     working = []
     lines = list(parsed_outbounds.keys())
     base_port = 21000
-
     pool = ThreadPoolExecutor(max_workers=max_workers)
     futures = {}
     for i, line in enumerate(lines):
@@ -333,19 +368,19 @@ def validate_all(parsed_outbounds, xray_bin, max_workers=VALIDATE_WORKERS):
         except Exception:
             ok = False
         status = "OK" if ok else "dead"
-        print(f"[{done_count}/{total}] {status}: {line[:70]}...")
+        print(f"[{done_count}/{total}] {status}: {line[:80]}...")
         if ok:
             working.append(line)
-
         if time_remaining() <= 0:
             print("Time budget exhausted mid validation, stopping early with what has passed so far.")
             pool.shutdown(wait=False, cancel_futures=True)
             write_and_exit(working, "Stopped early due to time budget.")
-
     pool.shutdown(wait=True)
     return working
 
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
     print("Step 1: collecting candidate configs from sources...")
     candidates = fetch_and_clean_configs()
@@ -371,11 +406,14 @@ def main():
         write_and_exit([], "Ran out of time during the reachability pre-filter.")
 
     print("Step 4: validating reachable candidates through a real proxy request...")
-    reachable_outbounds = {line: parsed_outbounds[line] for line in reachable_lines}
+    # Keep only the ones we successfully parsed into a DPI-friendly outbound
+    reachable_outbounds = {
+        line: parsed_outbounds[line]
+        for line in reachable_lines
+        if line in parsed_outbounds
+    }
     working_configs = validate_all(reachable_outbounds, xray_bin)
-
     write_and_exit(working_configs, "Finished full validation pass.")
-
 
 if __name__ == "__main__":
     main()
