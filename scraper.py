@@ -36,11 +36,6 @@ PREFILTER_WORKERS = 100    # plain TCP connects are cheap, so run a lot at once
 VALIDATE_WORKERS = 25      # real xray handshakes are expensive, so run fewer at once
 XRAY_DIR = os.path.join(tempfile.gettempdir(), "xray-validator-bin")
 
-# Hard wall clock budget for the whole script, independent of how many
-# candidates there are. When this is hit, whatever has already validated
-# successfully gets written out immediately and the process exits without
-# waiting on any still-running xray subprocess. This is what keeps the
-# workflow from being killed with nothing committed, the way it just was.
 SCRIPT_DEADLINE_SECONDS = 28 * 60
 SCRIPT_START_TIME = time.time()
 
@@ -49,15 +44,8 @@ def time_remaining():
     return SCRIPT_DEADLINE_SECONDS - (time.time() - SCRIPT_START_TIME)
 
 
-# ---------------------------------------------------------------------------
-# 1. Fetch and pattern-match raw config lines, same as before.
-# ---------------------------------------------------------------------------
 def fetch_and_clean_configs():
     valid_configs = []
-    # Only VLESS is kept end to end right now, so non-VLESS lines are
-    # dropped at the very first step, before the pre-filter or the real
-    # xray validation ever run. That means the time budget only ever gets
-    # spent on protocols the app actually shows.
     protocol_pattern = re.compile(r'^vless://[^\s]+')
 
     for url in SOURCES:
@@ -78,10 +66,6 @@ def fetch_and_clean_configs():
     return valid_configs
 
 
-# ---------------------------------------------------------------------------
-# 2. Get a working xray binary onto disk. Downloads once per run (or reuses
-#    a cached copy if the workflow caches XRAY_DIR between runs).
-# ---------------------------------------------------------------------------
 def ensure_xray_binary():
     binary_name = "xray.exe" if platform.system() == "Windows" else "xray"
     binary_path = os.path.join(XRAY_DIR, binary_name)
@@ -137,10 +121,6 @@ def ensure_xray_binary():
     return binary_path
 
 
-# ---------------------------------------------------------------------------
-# 3. Parse each supported URI scheme into an xray outbound block.
-#    Returns None on anything malformed so the caller can just skip it.
-# ---------------------------------------------------------------------------
 def _split_fragment(uri):
     if '#' in uri:
         base, label = uri.split('#', 1)
@@ -201,126 +181,9 @@ def parse_vless(uri):
         return None
 
 
-def parse_trojan(uri):
-    try:
-        parsed = urllib.parse.urlsplit(uri)
-        password = parsed.username
-        host = parsed.hostname
-        port = parsed.port
-        params = urllib.parse.parse_qs(parsed.query)
-
-        def p(key, default=None):
-            return params.get(key, [default])[0]
-
-        network = p("type", "tcp")
-        security = p("security", "tls")
-
-        stream_settings = {"network": network, "security": security}
-        if security == "tls":
-            stream_settings["tlsSettings"] = {"serverName": p("sni", host)}
-        if network == "ws":
-            stream_settings["wsSettings"] = {
-                "path": p("path", "/"),
-                "headers": {"Host": p("host")} if p("host") else {}
-            }
-
-        outbound = {
-            "protocol": "trojan",
-            "settings": {
-                "servers": [{"address": host, "port": port, "password": password}]
-            },
-            "streamSettings": stream_settings
-        }
-        return outbound
-    except Exception:
-        return None
-
-
-def parse_vmess(uri):
-    try:
-        payload = uri[len("vmess://"):]
-        payload, _ = _split_fragment(payload)
-        padded = payload + "=" * (-len(payload) % 4)
-        data = json.loads(base64.b64decode(padded).decode('utf-8'))
-
-        host = data.get("add")
-        port = int(data.get("port"))
-        uid = data.get("id")
-        alter_id = int(data.get("aid", 0) or 0)
-        network = data.get("net", "tcp")
-        tls_on = data.get("tls", "") == "tls"
-
-        stream_settings = {"network": network, "security": "tls" if tls_on else "none"}
-        if tls_on:
-            stream_settings["tlsSettings"] = {"serverName": data.get("sni") or data.get("host") or host}
-        if network == "ws":
-            stream_settings["wsSettings"] = {
-                "path": data.get("path", "/"),
-                "headers": {"Host": data.get("host")} if data.get("host") else {}
-            }
-        elif network == "grpc":
-            stream_settings["grpcSettings"] = {"serviceName": data.get("path", "")}
-
-        outbound = {
-            "protocol": "vmess",
-            "settings": {
-                "vnext": [{
-                    "address": host,
-                    "port": port,
-                    "users": [{"id": uid, "alterId": alter_id, "security": "auto"}]
-                }]
-            },
-            "streamSettings": stream_settings
-        }
-        return outbound
-    except Exception:
-        return None
-
-
-def parse_ss(uri):
-    try:
-        body = uri[len("ss://"):]
-        body, _ = _split_fragment(body)
-        # Some params after '?' are optional plugin info we don't support; drop them.
-        if '?' in body:
-            body = body.split('?', 1)[0]
-
-        if '@' in body:
-            userinfo, hostport = body.rsplit('@', 1)
-            try:
-                padded = userinfo + "=" * (-len(userinfo) % 4)
-                decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
-                method, password = decoded.split(':', 1)
-            except Exception:
-                method, password = userinfo.split(':', 1)
-        else:
-            padded = body + "=" * (-len(body) % 4)
-            decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
-            creds, hostport = decoded.rsplit('@', 1)
-            method, password = creds.split(':', 1)
-
-        host, port_str = hostport.rsplit(':', 1)
-        port = int(port_str)
-
-        outbound = {
-            "protocol": "shadowsocks",
-            "settings": {
-                "servers": [{"address": host, "port": port, "method": method, "password": password}]
-            }
-        }
-        return outbound
-    except Exception:
-        return None
-
-
 PARSERS = {
     "vless": parse_vless,
-    # vmess, trojan, and ss are intentionally left out here. They're never
-    # collected by fetch_and_clean_configs() anymore, so nothing would ever
-    # reach these parsers, but keeping the registry restricted to what's
-    # actually in use makes that explicit rather than implicit.
 }
-
 
 
 def extract_host_port(outbound):
@@ -348,12 +211,6 @@ def tcp_reachable(host, port, timeout):
         return False
 
 
-# ---------------------------------------------------------------------------
-# Stage A: cheap plain TCP reachability check, run at high concurrency.
-# This throws out hosts that are simply offline or unreachable before we
-# ever pay the cost of spinning up an xray process for them. Parsing each
-# URI here too, so stage B does not have to parse twice.
-# ---------------------------------------------------------------------------
 def prefilter_reachable(configs, max_workers=PREFILTER_WORKERS, timeout=PREFILTER_TIMEOUT):
     reachable_lines = []
     parsed_outbounds = {}
@@ -394,11 +251,6 @@ def build_test_config(outbound, local_port):
     }
 
 
-# ---------------------------------------------------------------------------
-# 4. Validate one config: spin up xray on a scratch port, route a real
-#    request through it, tear it down. This is what actually catches a dead
-#    or credential-expired server, not just an open TCP port.
-# ---------------------------------------------------------------------------
 def wait_for_port(port, timeout_s):
     start = time.time()
     while time.time() - start < timeout_s:
@@ -457,12 +309,6 @@ def write_and_exit(working_configs, reason):
     with open("configs.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(working_configs))
     print(f"{reason} Wrote {len(working_configs)} working configs to configs.txt.")
-    # os._exit skips waiting on any still-running worker thread or xray
-    # subprocess. Regular sys.exit would block here until every submitted
-    # task finishes, which is exactly what caused the job to run past its
-    # time limit with nothing committed. The CI runner tears the container
-    # down right after this step anyway, so any orphaned xray process is
-    # not a concern.
     os._exit(0)
 
 
