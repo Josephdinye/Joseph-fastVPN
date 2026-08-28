@@ -22,7 +22,7 @@ on:
     # This line is the actual trigger value GitHub reads. Double check it
     # matches this comment after any future edit; a stale comment next to
     # a wrong cron expression is exactly what caused the last mismatch.
-    - cron: '0 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch: {} # lets you click "Run workflow" manually to test anytime; separate from and does not replace the schedule above
 permissions:
   contents: write # needed to push the updated configs.txt back to the repo
