@@ -1,0 +1,56 @@
+@"
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Next.js
+.next/
+**/.next/
+
+# Build output
+dist/
+**/dist/
+build/
+**/build/
+out/
+**/out/
+
+# Electron
+release/
+**/release/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Firebase / Google service account credentials
+service-account.json
+firebase-service-account.json
+firebase-adminsdk-*.json
+**/*service-account*.json
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Temporary files
+*.tmp
+*.temp
+"@ | Set-Content .gitignore

@@ -1,0 +1,9 @@
+{
+  "autoConnectOnLaunch": false,
+  "launchOnStartup": false,
+  "killSwitchEnabled": false,
+  "dnsLeakProtection": true,
+  "customDnsServers": [],
+  "excludedApps": [],
+  "excludedWebsites": []
+}

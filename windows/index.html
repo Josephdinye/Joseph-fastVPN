@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+    <title>Joseph FastVPN</title>
+
+    <style>
+
+        :root {
+            --bg-main: #0f172a;
+            --bg-sidebar: #1e293b;
+            --bg-card: #1e293b;
+            --accent: #3b82f6;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --text-main: #f8fafc;
+            --text-secondary: #cbd5e1;
+            --text-muted: #64748b;
+            --border-color: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            height: 100vh;
+            background: var(--bg-main);
+            color: var(--text-main);
+            overflow: hidden;
+        }
+
+        /* Layout Sidebar Menu */
+
+        .sidebar {
+            width: 220px;
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+
+            /* Moved the brand and navigation slightly downward */
+            padding: 45px 0;
+        }
+
+        .sidebar-brand {
+            text-align: center;
+            font-size: 20px;
+            font-weight: bold;
+            color: var(--text-main);
+            margin-bottom: 35px;
+
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        /* Joseph FastVPN Logo */
+        .sidebar-logo {
+            width: 90px;
+            height: 90px;
+            object-fit: cover;
+            border-radius: 14px;
+            display: block;
+        }
+
+        .nav-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            text-align: left;
+            padding: 14px 24px;
+            font-size: 14px;
+            cursor: pointer;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.2s;
+        }
+
+        .nav-btn:hover {
+            background: #273549;
+            color: var(--text-main);
+        }
+
+        .nav-btn.active {
+            background: var(--accent);
+            color: white;
+            font-weight: 600;
+        }
+
+        /* Document Viewports */
+
+        .content-viewport {
+            flex: 1;
+            padding: 35px;
+            overflow-y: auto;
+            height: 100%;
+        }
+
+        .card {
+            background: var(--bg-card);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            margin-top: 15px;
+        }
+
+        .fade-in {
+            animation: fadeInFrame 0.25s ease-out forwards;
+        }
+
+        @keyframes fadeInFrame {
+            from {
+                opacity: 0;
+                transform: translateY(4px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* VPN Ring Gauge Component Block Styles */
+
+        .header-banner {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .pulse-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pulse-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .pulse-dot.idle {
+            background: var(--text-muted);
+        }
+
+        .pulse-dot.routing {
+            background: #f59e0b;
+            animation: pulseGlow 1s infinite alternate;
+        }
+
+        .pulse-dot.active {
+            background: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+
+        @keyframes pulseGlow {
+            from {
+                opacity: 0.4;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .status-text {
+            font-size: 13px;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+
+        .timer-badge {
+            font-family: monospace;
+            font-size: 16px;
+            background: #273549;
+            padding: 4px 12px;
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        .gauge-viewport {
+            display: flex;
+            justify-content: center;
+            margin: 25px 0 35px;
+        }
+
+        .outer-ring {
+            width: 190px;
+            height: 190px;
+            border-radius: 50%;
+            background: #131c2e;
+            border: 3px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .inner-ring {
+            width: 160px;
+            height: 160px;
+            border-radius: 50%;
+            background: #1a2436;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .power-button {
+            width: 130px;
+            height: 130px;
+            border-radius: 50%;
+            border: none;
+            outline: none;
+            background: var(--bg-main);
+            color: var(--text-muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
+        }
+
+        .power-button.routing {
+            color: #f59e0b;
+            transform: scale(0.96);
+        }
+
+        .power-button.connected {
+            color: var(--accent-green);
+            background: #112423;
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
+        }
+
+        /* Dynamic Active Target Item Selector Bar */
+
+        .node-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .node-panel:hover {
+            background: #243249;
+        }
+
+        .node-meta {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .flag-icon {
+            width: 32px;
+            height: auto;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .icon-placeholder {
+            font-size: 24px;
+        }
+
+        .node-details {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .node-name {
+            font-weight: bold;
+            font-size: 15px;
+            color: var(--text-main);
+        }
+
+        .node-location {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .node-action {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .protocol-badge {
+            font-size: 10px;
+            font-weight: bold;
+            background: #273549;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--accent);
+        }
+
+        .latency-badge {
+            font-size: 11px;
+            background: #1e293b;
+            border: 1px solid var(--border-color);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--accent-green);
+        }
+
+        .chevron {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        /* Throughput Speeds Information Layout */
+
+        .metrics-grid {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            flex: 1;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            padding: 15px;
+            border-radius: 12px;
+        }
+
+        .metric-header {
+            font-size: 11px;
+            font-weight: bold;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        .metric-icon.up {
+            color: var(--accent);
+        }
+
+        .metric-icon.down {
+            color: var(--accent-green);
+        }
+
+        .metric-value {
+            font-size: 18px;
+            font-weight: bold;
+            font-family: monospace;
+            color: var(--text-main);
+            margin-bottom: 4px;
+        }
+
+        .metric-footer {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .list-container {
+            max-height: 340px;
+            overflow-y: auto;
+            margin-top: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #131c2e;
+        }
+
+        .server-item {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .server-item:hover {
+            background: #1e293b;
+        }
+
+        .server-item.selected {
+            background: #1b2c4a;
+            border-left: 4px solid var(--accent);
+        }
+
+        .native-input {
+            width: 100%;
+            padding: 12px;
+            border-radius: 6px;
+            background: #131c2e;
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            outline: none;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Debug Error Card styles */
+
+        .debug-error-box {
+            background: #7f1d1d;
+            border: 2px solid #f87171;
+            border-radius: 8px;
+            padding: 20px;
+            color: #fef2f2;
+            font-family: monospace;
+            margin-top: 20px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            text-align: left;
+            user-select: text !important;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+    <nav class="sidebar">
+
+        <div class="sidebar-brand">
+
+            <img
+                src="assets/icon.ico"
+                alt="Joseph FastVPN"
+                class="sidebar-logo"
+            />
+
+            <div>Joseph FastVPN</div>
+
+        </div>
+
+        <button class="nav-btn active" data-screen="home">
+            🏠 Home
+        </button>
+
+        <button class="nav-btn" data-screen="servers">
+            🌐 Servers
+        </button>
+
+        <button class="nav-btn" data-screen="about">
+            ℹ️ About
+        </button>
+
+        <button class="nav-btn" data-screen="settings">
+            ⚙️ Settings
+        </button>
+
+    </nav>
+
+    <main class="content-viewport" id="viewport">
+
+        <h2 style="color: var(--text-secondary)">
+            Loading Application Module Viewports...
+        </h2>
+
+    </main>
+
+    <!-- Global Interface Exception Interceptor Catcher -->
+
+    <script>
+
+        window.onerror = function(message, source, lineno, colno, error) {
+
+            const viewport = document.getElementById('viewport');
+
+            if (viewport) {
+
+                viewport.innerHTML = `
+
+                    <h2 style="color: var(--accent-red)">
+                        🚨 Script Compilation Crash
+                    </h2>
+
+                    <div class="debug-error-box">
+
+<strong>Error details:</strong> ${message}
+
+<strong>Source File:</strong> ${source}
+
+<strong>Line Number:</strong> ${lineno}:${colno}
+
+                    </div>
+
+                    <p style="margin-top:15px; color:var(--text-secondary)">
+                        Please check this specific line error output to resolve the build barrier layout mismatch.
+                    </p>
+
+                `;
+
+            }
+
+            return false;
+
+        };
+
+    </script>
+
+    <script src="renderer.js"></script>
+
+</body>
+
+</html>

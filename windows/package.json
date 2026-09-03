@@ -1,0 +1,54 @@
+{
+  "name": "Joseph_FastVPN",
+  "version": "1.0.0",
+  "description": "Joseph FastVPN",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --windows"
+  },
+  "keywords": [],
+  "author": "Joseph",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.joseph.fastvpn",
+    "productName": "Joseph FastVPN",
+    "compression": "maximum",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "bin/xray.exe"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "nsis"
+      ],
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Joseph FastVPN"
+    }
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "firebase-admin": "^14.3.0",
+    "getmac": "^6.6.0",
+    "node-machine-id": "^1.1.12"
+  }
+}
