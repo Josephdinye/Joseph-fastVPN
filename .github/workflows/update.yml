@@ -1,0 +1,56 @@
+name: Update Free VPN Configs
+# IMPORTANT: this file only gets its schedule read by GitHub if it lives on
+# your repository's DEFAULT branch (normally "main"). A copy on any other
+# branch will run fine when you click "Run workflow" manually, but the cron
+# trigger below will never fire on its own. If you are not 100% sure this
+# exact file is committed to main, that is almost certainly why it has only
+# ever run when you triggered it by hand.
+#
+# GitHub also auto-disables the schedule on any workflow if the repository
+# goes 60 days with no commits at all (not just to this file). If it was
+# working before and just stopped, check the Actions tab for this workflow;
+# it will say "This scheduled workflow is disabled" at the top if that has
+# happened, and any new commit to the repo re-enables it.
+on:
+  schedule:
+    # Every 30 minutes, offset to :07 and :37 instead of :00/:30. GitHub
+    # explicitly does not guarantee schedules fire at the exact minute, and
+    # load is worst right at the top and bottom of the hour since that is
+    # when the most other repos' workflows are also queued. Landing a few
+    # minutes off that mark makes runs noticeably more consistent.
+    #
+    # This line is the actual trigger value GitHub reads. Double check it
+    # matches this comment after any future edit; a stale comment next to
+    # a wrong cron expression is exactly what caused the last mismatch.
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {} # lets you click "Run workflow" manually to test anytime; separate from and does not replace the schedule above
+permissions:
+  contents: write # needed to push the updated configs.txt back to the repo
+concurrency:
+  group: update-free-vpn-configs
+  cancel-in-progress: true # if a run is still going when the next one is due, drop the old one instead of piling up
+jobs:
+  scrape-and-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35 # scraper.py self-limits its validation pass to 28 minutes and always writes configs.txt before exiting; this is just a safety margin on top of that
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+      - name: Set Up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Run Proxy Scraper And Validator Script
+        run: python scraper.py
+      - name: Commit and Push Updated Configurations
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add configs.txt
+          if git diff --staged --quiet; then
+            echo "No new configuration links detected. Skipping commit."
+          else
+            git commit -m "Automated update: Refreshed active-only proxy configs"
+            git push
+          fi
