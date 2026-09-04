@@ -6,6 +6,11 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 function extractApiKey(req: NextRequest): string | null {
+  // 1) ?key=...  (your link style)
+  const q = req.nextUrl.searchParams.get('key');
+  if (q && q.trim()) return q.trim();
+
+  // 2) Header alternatives
   const headerKey =
     req.headers.get('x-joseph-key') ||
     req.headers.get('x-api-key');
@@ -16,34 +21,26 @@ function extractApiKey(req: NextRequest): string | null {
     return auth.slice(7).trim();
   }
 
-  // Optional: ?key= only for quick tests — prefer headers in production
-  const q = req.nextUrl.searchParams.get('key');
-  if (q && q.trim()) return q.trim();
-
   return null;
-}
-
-function unauthorized() {
-  return NextResponse.json(
-    { success: false, error: 'Unauthorized' },
-    { status: 401, headers: { 'Cache-Control': 'no-store' } }
-  );
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const expected = process.env.NODES_API_KEY?.trim();
+    // Your Vercel env name
+    const expected = (process.env.NODES_API_KEY || '').trim();
     if (!expected) {
-      // Misconfigured server — fail closed
       return NextResponse.json(
-        { success: false, error: 'API key not configured on server' },
+        { success: false, error: 'NODES_API_KEY is not configured on the server' },
         { status: 503 }
       );
     }
 
     const provided = extractApiKey(req);
     if (!provided || provided !== expected) {
-      return unauthorized();
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401, headers: { 'Cache-Control': 'no-store' } }
+      );
     }
 
     const { searchParams } = new URL(req.url);
