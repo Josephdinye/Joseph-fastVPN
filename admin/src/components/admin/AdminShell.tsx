@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import Sidebar from './Sidebar';
-import Header from './Header';
+import Sidebar from '@/components/admin/Sidebar';
+import Header from '@/components/admin/Header';
 
 export default function AdminShell({
   email,
@@ -18,7 +18,7 @@ export default function AdminShell({
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="lg:pl-64">
-        <div className="sticky top-0 z-30">
+        <div className="sticky top-0 z-40">
           <Header email={email} onMenuClick={() => setSidebarOpen(true)} />
         </div>
         <main className="p-4 sm:p-6 lg:p-8">{children}</main>
