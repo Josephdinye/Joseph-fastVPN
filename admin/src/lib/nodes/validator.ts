@@ -1,3 +1,4 @@
+// admin/src/lib/nodes/validator.ts
 import type { VPNNode } from './cache';
 
 export interface ValidateResult {

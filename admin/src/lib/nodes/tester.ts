@@ -1,117 +1,68 @@
-// admin/src/lib/nodes/tester.ts
+// admin/src/lib/nodes/tester.ts - WEB VERSION - NO XRAY BINARY NEEDED
 import net from 'net';
-import http from 'http';
-import https from 'https';
-import tls from 'tls';
-import fs from 'fs';
-import path from 'path';
-import { spawn } from 'child_process';
-import type { VPNNode } from './cache';
+import type { VPNNode } from './types';
 
-const XRAY_PATH = process.env.XRAY_BIN_PATH || path.join(process.cwd(), 'bin', 'xray'); // Linux binary, NOT xray.exe
+const TIMEOUT = Number(process.env.NODE_TEST_TIMEOUT || 5000);
 
-function buildXrayConfig(rawUrl: string, localPort: number) {
-  const url = new URL(rawUrl);
-  const uuid = url.username;
-  const address = url.hostname;
-  const port = parseInt(url.port);
-  const sp = url.searchParams;
-
-  return {
-    log: { loglevel: 'warning' },
-    inbounds: [{ port: localPort, protocol: 'http', settings: { auth: 'noauth', udp: true } }],
-    outbounds: [{
-      protocol: 'vless',
-      settings: { vnext: [{ address, port, users: [{ id: uuid, encryption: 'none', flow: sp.get('flow') || undefined }] }] },
-      streamSettings: {
-        network: sp.get('type') || 'tcp',
-        security: sp.get('security') || 'none',
-        realitySettings: sp.get('security') === 'reality' ? {
-          show: false,
-          fingerprint: sp.get('fp') || 'chrome',
-          serverName: sp.get('sni') || '',
-          publicKey: sp.get('pbk') || '',
-          shortId: sp.get('sid') || '',
-        } : undefined,
-        tlsSettings: sp.get('security') === 'tls' ? {
-          serverName: sp.get('sni') || '',
-          fingerprint: sp.get('fp') || 'chrome',
-        } : undefined,
-        wsSettings: sp.get('type') === 'ws' ? {
-          path: sp.get('path') || '/',
-          headers: sp.get('host') ? { Host: sp.get('host')! } : undefined,
-        } : undefined,
-        grpcSettings: sp.get('type') === 'grpc' ? { serviceName: sp.get('serviceName') || '' } : undefined,
-      },
-    }],
-  };
-}
-
-function waitForPort(port: number, timeoutMs: number) {
-  return new Promise<void>((resolve, reject) => {
+function tcpPing(host: string, port: number, timeout = TIMEOUT): Promise<{ online: boolean, latency: number }> {
+  return new Promise((resolve) => {
     const start = Date.now();
-    (function attempt() {
-      const socket = net.connect(port, '127.0.0.1');
-      socket.once('connect', () => { socket.end(); resolve(); });
-      socket.once('error', () => {
-        socket.destroy();
-        if (Date.now() - start > timeoutMs) reject(new Error('proxy never bound port'));
-        else setTimeout(attempt, 100);
-      });
-    })();
-  });
-}
+    const socket = new net.Socket();
+    let done = false;
 
-function requestThroughProxy(targetUrl: string, proxyPort: number, timeoutMs: number) {
-  return new Promise<void>((resolve, reject) => {
-    const target = new URL(targetUrl);
-    let settled = false;
-    const finish = (fn: any, val?: any) => { if (!settled) { settled = true; fn(val); } };
+    const finish = (online: boolean) => {
+      if (done) return;
+      done = true;
+      const latency = Date.now() - start;
+      try { socket.destroy(); } catch {}
+      resolve({ online, latency });
+    };
 
-    const connectReq = http.request({ host: '127.0.0.1', port: proxyPort, method: 'CONNECT', path: `${target.hostname}:443` });
-    const timer = setTimeout(() => { connectReq.destroy(); finish(reject, new Error('timeout')); }, timeoutMs);
-
-    connectReq.on('connect', (res, socket) => {
-      if (res.statusCode !== 200) { clearTimeout(timer); socket.destroy(); return finish(reject, new Error(`CONNECT ${res.statusCode}`)); }
-      const tlsSocket = tls.connect({ socket, servername: target.hostname, rejectUnauthorized: false }, () => {
-        const req = https.request({ createConnection: () => tlsSocket, hostname: target.hostname, path: target.pathname || '/', method: 'GET' }, (r) => {
-          r.on('data', () => {});
-          r.on('end', () => { clearTimeout(timer); finish(resolve); });
-        });
-        req.on('error', (e) => { clearTimeout(timer); finish(reject, e); });
-        req.end();
-      });
-      tlsSocket.on('error', (e) => { clearTimeout(timer); finish(reject, e); });
-    });
-    connectReq.on('error', (e) => { clearTimeout(timer); finish(reject, e); });
-    connectReq.end();
+    socket.setTimeout(timeout);
+    socket.on('connect', () => finish(true));
+    socket.on('timeout', () => finish(false));
+    socket.on('error', () => finish(false));
+    
+    try {
+      socket.connect(port, host);
+    } catch {
+      finish(false);
+    }
   });
 }
 
 export async function testNode(node: VPNNode): Promise<VPNNode> {
-  const timeoutMs = Number(process.env.NODE_TEST_TIMEOUT || 3500);
-  const testPort = 20000 + Math.floor(Math.random() * 20000);
-  const testUrl = process.env.NODE_TEST_URL || 'https://www.gstatic.com/generate_204';
-  const cfgPath = path.join('/tmp', `xray-test-${testPort}.json`);
-  let proc: ReturnType<typeof spawn> | null = null;
-
   try {
-    if (!fs.existsSync(XRAY_PATH)) {
-      return { ...node, status: 'offline', latency: null, failReason: `xray binary missing at ${XRAY_PATH}`, lastChecked: new Date().toISOString() };
-    }
-    fs.writeFileSync(cfgPath, JSON.stringify(buildXrayConfig(node.raw, testPort), null, 2));
-    proc = spawn(XRAY_PATH, ['run', '-c', cfgPath]);
+    // Just check if host:port is open - works on Vercel, no binary
+    const { online, latency } = await tcpPing(node.address, node.port);
 
-    await waitForPort(testPort, 1500);
-    const start = Date.now();
-    await requestThroughProxy(testUrl, testPort, timeoutMs);
-    const latency = Date.now() - start;
-
-    return { ...node, status: 'online', latency, speedMbps: null, failReason: null, lastChecked: new Date().toISOString() };
-  } catch (err: any) {
-    return { ...node, status: 'offline', latency: null, failReason: err.message, lastChecked: new Date().toISOString() };
-  } finally {
-    if (proc) try { proc.kill(); } catch {}
-    try { fs.unlinkSync(cfgPath); } catch {}
+    return {
+      ...node,
+      status: online ? 'online' : 'offline',
+      latency: online ? latency : null,
+      failReason: online ? null : `TCP ${node.address}:${node.port} unreachable`,
+      lastChecked: new Date().toISOString(),
+      enabled: node.enabled, // preserve manual block
+    };
+  } catch (e: any) {
+    return {
+      ...node,
+      status: 'offline',
+      latency: null,
+      failReason: e.message,
+      lastChecked: new Date().toISOString(),
+      enabled: node.enabled,
+    };
   }
+}
+
+// Batch tester for worker.ts
+export async function testNodesBatch(nodes: VPNNode[], concurrency = 50): Promise<VPNNode[]> {
+  const results: VPNNode[] = [];
+  for (let i = 0; i < nodes.length; i += concurrency) {
+    const batch = nodes.slice(i, i + concurrency);
+    const tested = await Promise.all(batch.map(testNode));
+    results.push(...tested);
+  }
+  return results;
 }

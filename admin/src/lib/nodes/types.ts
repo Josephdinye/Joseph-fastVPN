@@ -1,3 +1,4 @@
+// admin/src/lib/nodes/types.ts
 export type NodeStatus = 'unknown' | 'testing' | 'online' | 'offline' | 'degraded';
 export type NodeSecurityStatus = 'pending' | 'approved' | 'suspicious' | 'blocked';
 
@@ -23,17 +24,17 @@ export interface VPNNode {
   hasRealityKey: boolean;
   allowInsecure: boolean;
 
-  status: NodeStatus;
-  latency: number | null;
-  speedMbps: number | null;
-  score: number;
-  enabled: boolean;
+  status: NodeStatus; // for dashboard speed test only
+  latency: number | null; // for dashboard only
+  speedMbps: number | null; // for dashboard only
+  score: number; // for dashboard sort only
+  enabled: boolean; // THE ONLY FIELD THAT AFFECTS APP - true = send to app, false = blocked
   failReason: string | null;
   lastChecked: string | null;
 
-  securityStatus: NodeSecurityStatus;
-  securityScore: number;
-  securityReasons: string[];
+  securityStatus: NodeSecurityStatus; // dashboard badge only
+  securityScore: number; // dashboard badge only
+  securityReasons: string[]; // dashboard badge only
 }
 
 export interface SecurityResult {

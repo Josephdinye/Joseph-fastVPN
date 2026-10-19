@@ -1,4 +1,4 @@
-// admin/src/app/api/nodes/[id]/route.ts
+// admin/src/app/api/nodes/[id]/route.ts - Block button for dashboard
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, AuthError } from '@/lib/auth';
 import { getNodeCache, setNodeBlocked } from '@/lib/nodes/cache';
@@ -42,12 +42,18 @@ export async function PATCH(
       );
     }
 
+    // enabled=false -> blocked from app, enabled=true -> allowed to app
     setNodeBlocked(id, !body.enabled);
+
+    const cache = getNodeCache();
+    const node = cache.nodes.find(n => n.id === id);
 
     return NextResponse.json({
       success: true,
       id,
-      updates: { enabled: body.enabled },
+      enabled: node?.enabled ?? body.enabled,
+      totalEnabled: cache.nodes.filter(n => n.enabled).length,
+      totalBlocked: cache.nodes.filter(n => !n.enabled).length,
     });
   } catch (err) {
     if (err instanceof AuthError) {

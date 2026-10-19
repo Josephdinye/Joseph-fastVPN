@@ -1,3 +1,4 @@
+// admin/src/lib/nodes/policy.ts
 export const NODE_POLICY = {
   minSecurityScore: 80,
   minReliabilityForSafeList: 40,

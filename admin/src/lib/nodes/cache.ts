@@ -69,7 +69,12 @@ export function getNodeCache(): NodeCache {
 
 export function setNodeCache(nodes: VPNNode[]) {
   const cache = getNodeCache();
-  cache.nodes = nodes;
+  // Preserve blocked state when refreshing from GitHub
+  const blocked = globalForNodes.vpnBlockedIds!;
+  cache.nodes = nodes.map(n => ({
+    ...n,
+    enabled: !blocked.has(n.id) && n.enabled !== false
+  }));
   cache.updatedAt = new Date().toISOString();
   cache.cycle += 1;
   cache.error = null;
@@ -95,9 +100,53 @@ export function isNodeBlocked(id: string): boolean {
   return globalForNodes.vpnBlockedIds!.has(id);
 }
 
-export function applyBlocks(nodes: VPNNode[]): VPNNode[] {
-  return nodes.map((n) => ({
+// For ADMIN DASHBOARD - returns ALL nodes, including blocked (so you can see & unblock)
+export function getAdminNodes(): VPNNode[] {
+  const cache = getNodeCache();
+  return cache.nodes.map(n => ({
     ...n,
-    enabled: !isNodeBlocked(n.id) && n.enabled !== false,
+    enabled: !isNodeBlocked(n.id) && n.enabled !== false
   }));
+}
+
+// For FRONTEND APP - returns ONLY enabled nodes as raw strings, same as GitHub raw
+export function applyBlocks(nodes: VPNNode[]): VPNNode[] {
+  return nodes.filter(n => !isNodeBlocked(n.id) && n.enabled !== false);
+}
+
+export function getPublicRawNodes(): string[] {
+  return applyBlocks(getNodeCache().nodes).map(n => n.raw);
+}
+
+// Auto-refresh from GitHub raw if cache is empty
+export async function refreshCacheIfEmpty(): Promise<NodeCache> {
+  const cache = getNodeCache();
+  if (cache.nodes.length > 0) return cache;
+
+  try {
+    const { downloadNodeFeed } = await import('./feed');
+    const { parseVlessNodes } = await import('./parser'); // your parser.ts should export this
+    
+    const rawText = await downloadNodeFeed();
+    const parsed = parseVlessNodes(rawText); // returns VPNNode[]
+    
+    setNodeCache(parsed);
+    return getNodeCache();
+  } catch (e: any) {
+    setNodeError(e.message || String(e));
+    return cache;
+  }
+}
+
+// For speed test - updates latency/speed but NEVER changes enabled
+export function updateNodeTestResult(id: string, result: Partial<VPNNode>) {
+  const node = getNodeCache().nodes.find(n => n.id === id);
+  if (node) {
+    node.status = result.status || node.status;
+    node.latency = result.latency ?? node.latency;
+    node.speedMbps = result.speedMbps ?? node.speedMbps;
+    node.lastChecked = new Date().toISOString();
+    node.failReason = result.failReason ?? null;
+    // IMPORTANT: we do NOT touch enabled here
+  }
 }

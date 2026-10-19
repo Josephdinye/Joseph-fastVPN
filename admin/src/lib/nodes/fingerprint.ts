@@ -1,9 +1,13 @@
+// admin/src/lib/nodes/fingerprint.ts
 import crypto from 'crypto';
 
-/** Stable id: ignore display name / remark */
+/** Stable id: ignore display name / remark (#...) */
 export function fingerprintVless(raw: string): string {
   try {
-    const url = new URL(raw);
+    // Remove #remark before parsing - so #US vs #United States = same id
+    const withoutRemark = raw.split('#')[0];
+    const url = new URL(withoutRemark);
+    
     const uuid = url.username || '';
     const host = (url.hostname || '').toLowerCase();
     const port = url.port || '443';
@@ -15,6 +19,7 @@ export function fingerprintVless(raw: string): string {
     const flow = url.searchParams.get('flow') || '';
     const path = url.searchParams.get('path') || '';
     const serviceName = url.searchParams.get('serviceName') || '';
+    const fp = url.searchParams.get('fp') || '';
 
     const canonical = [
       uuid,
@@ -28,6 +33,7 @@ export function fingerprintVless(raw: string): string {
       flow,
       path,
       serviceName,
+      fp,
     ].join('|');
 
     return crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 16);
@@ -35,3 +41,6 @@ export function fingerprintVless(raw: string): string {
     return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
   }
 }
+
+// Keep this alias so cache.ts can use it
+export const fingerprintNode = fingerprintVless;

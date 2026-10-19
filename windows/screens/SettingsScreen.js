@@ -1,5 +1,8 @@
+const { toast } = require('../ui-notify');
+
 const SettingsScreen = {
-    render: () => `
+  render: function () {
+    return `
         <div class="screen active fade-in" id="settingsRoot">
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
                 <div>
@@ -8,7 +11,6 @@ const SettingsScreen = {
                 </div>
             </div>
 
-            <!-- General -->
             <section class="card settings-section">
                 <div class="settings-section-head">
                     <div class="settings-section-icon">⚙️</div>
@@ -41,7 +43,6 @@ const SettingsScreen = {
                 </div>
             </section>
 
-            <!-- Security -->
             <section class="card settings-section">
                 <div class="settings-section-head">
                     <div class="settings-section-icon">🛡️</div>
@@ -83,7 +84,6 @@ const SettingsScreen = {
                 </div>
             </section>
 
-            <!-- Websites -->
             <section class="card settings-section">
                 <div class="settings-section-head">
                     <div class="settings-section-icon">🌐</div>
@@ -102,7 +102,6 @@ const SettingsScreen = {
                 <div id="websiteEmptyState" class="settings-empty">No websites added yet</div>
             </section>
 
-            <!-- Apps -->
             <section class="card settings-section settings-section-last">
                 <div class="settings-section-head">
                     <div class="settings-section-icon">📦</div>
@@ -242,7 +241,6 @@ const SettingsScreen = {
                     font-size: 11px; color: var(--text-muted);
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
                 }
-                /* Toggle switch */
                 #settingsRoot .switch {
                     position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0;
                 }
@@ -265,244 +263,302 @@ const SettingsScreen = {
                 }
             </style>
         </div>
-    `,
+    `;
+  },
 
-    init: (ipcRenderer, appState) => {
-        const toggleAutoConnect = document.getElementById('toggleAutoConnect');
-        const toggleLaunchOnStartup = document.getElementById('toggleLaunchOnStartup');
-        const toggleKillSwitch = document.getElementById('toggleKillSwitch');
-        const toggleDnsProtection = document.getElementById('toggleDnsProtection');
-        const dnsPrimaryInput = document.getElementById('dnsPrimaryInput');
-        const dnsSecondaryInput = document.getElementById('dnsSecondaryInput');
-        const saveDnsBtn = document.getElementById('saveDnsBtn');
+  init: function (ipcRenderer, appState) {
+    const toggleAutoConnect = document.getElementById('toggleAutoConnect');
+    const toggleLaunchOnStartup = document.getElementById('toggleLaunchOnStartup');
+    const toggleKillSwitch = document.getElementById('toggleKillSwitch');
+    const toggleDnsProtection = document.getElementById('toggleDnsProtection');
+    const dnsPrimaryInput = document.getElementById('dnsPrimaryInput');
+    const dnsSecondaryInput = document.getElementById('dnsSecondaryInput');
+    const saveDnsBtn = document.getElementById('saveDnsBtn');
 
-        const websiteInput = document.getElementById('websiteInput');
-        const addWebsiteBtn = document.getElementById('addWebsiteBtn');
-        const websiteChipList = document.getElementById('websiteChipList');
-        const websiteEmptyState = document.getElementById('websiteEmptyState');
+    const websiteInput = document.getElementById('websiteInput');
+    const addWebsiteBtn = document.getElementById('addWebsiteBtn');
+    const websiteChipList = document.getElementById('websiteChipList');
+    const websiteEmptyState = document.getElementById('websiteEmptyState');
 
-        const appSearchInput = document.getElementById('appSearchInput');
-        const appListContainer = document.getElementById('appListContainer');
+    const appSearchInput = document.getElementById('appSearchInput');
+    const appListContainer = document.getElementById('appListContainer');
 
-        let settings = null;
-        let installedApps = [];
-        const iconCache = {}; // path -> dataURL | null
+    let settings = null;
+    let installedApps = [];
+    const iconCache = {};
 
-        const DOMAIN_REGEX = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+    const DOMAIN_REGEX = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
 
-        async function persist(partial) {
-            const result = await ipcRenderer.invoke('save-app-settings', partial);
-            if (result && result.success) {
-                settings = result.settings;
-                if (partial.killSwitchEnabled && result.killSwitchApplied === false) {
-                    alert('Kill switch could not be enabled. Try running the app as administrator.');
-                }
-            }
-            return result;
+    async function persist(partial) {
+      const result = await ipcRenderer.invoke('save-app-settings', partial);
+      if (result && result.success) {
+        settings = result.settings;
+        if (partial.killSwitchEnabled && result.killSwitchApplied === false) {
+          toast(
+            'Kill switch could not be enabled. Try running the app as administrator.',
+            'error',
+            'Kill switch'
+          );
         }
-
-        function renderWebsiteChips() {
-            websiteChipList.innerHTML = '';
-            const sites = (settings && settings.excludedWebsites) || [];
-            websiteEmptyState.style.display = sites.length === 0 ? 'block' : 'none';
-
-            sites.forEach((site) => {
-                const chip = document.createElement('div');
-                chip.className = 'settings-chip';
-                chip.innerHTML = `<span>${site}</span>`;
-
-                const removeBtn = document.createElement('button');
-                removeBtn.type = 'button';
-                removeBtn.innerText = '✕';
-                removeBtn.onclick = async () => {
-                    const updated = sites.filter(s => s !== site);
-                    await persist({ excludedWebsites: updated });
-                    renderWebsiteChips();
-                };
-                chip.appendChild(removeBtn);
-                websiteChipList.appendChild(chip);
-            });
-        }
-
-        async function addWebsite() {
-            const raw = websiteInput.value.trim().toLowerCase()
-                .replace(/^https?:\/\//, '')
-                .replace(/^www\./, '')
-                .replace(/\/.*$/, '');
-
-            if (!raw) return;
-            if (!DOMAIN_REGEX.test(raw)) {
-                alert('Enter a valid domain, e.g. netflix.com');
-                return;
-            }
-
-            const current = (settings && settings.excludedWebsites) || [];
-            if (current.includes(raw)) {
-                websiteInput.value = '';
-                return;
-            }
-
-            await persist({ excludedWebsites: [...current, raw] });
-            websiteInput.value = '';
-            renderWebsiteChips();
-        }
-
-        addWebsiteBtn.onclick = addWebsite;
-        websiteInput.onkeydown = (e) => {
-            if (e.key === 'Enter') addWebsite();
-        };
-
-        function isAppExcluded(appId) {
-            return ((settings && settings.excludedApps) || []).some(a => a.id === appId);
-        }
-
-        async function toggleApp(app, checked) {
-            const current = (settings && settings.excludedApps) || [];
-            const updated = checked
-                ? [...current, {
-                    id: app.id,
-                    name: app.name,
-                    publisher: app.publisher,
-                    installLocation: app.installLocation,
-                    iconPath: app.iconPath
-                }]
-                : current.filter(a => a.id !== app.id);
-            await persist({ excludedApps: updated });
-        }
-
-        function cleanIconPath(raw) {
-            if (!raw || typeof raw !== 'string') return null;
-            // Registry often stores "C:\\Path\\app.exe,0"
-            return raw.replace(/^"|"$/g, '').split(',')[0].trim() || null;
-        }
-
-        async function resolveAppIcon(app) {
-            const path = cleanIconPath(app.iconPath);
-            if (!path) return null;
-            if (Object.prototype.hasOwnProperty.call(iconCache, path)) {
-                return iconCache[path];
-            }
-            try {
-                const res = await ipcRenderer.invoke('get-app-icon', path);
-                const dataUrl = (res && res.success && res.dataUrl) ? res.dataUrl : null;
-                iconCache[path] = dataUrl;
-                return dataUrl;
-            } catch (e) {
-                iconCache[path] = null;
-                return null;
-            }
-        }
-
-        function renderAppList() {
-            const query = appSearchInput.value.trim().toLowerCase();
-            const filtered = query
-                ? installedApps.filter(a =>
-                    a.name.toLowerCase().includes(query) ||
-                    (a.publisher || '').toLowerCase().includes(query)
-                )
-                : installedApps;
-
-            appListContainer.innerHTML = '';
-
-            if (filtered.length === 0) {
-                appListContainer.innerHTML = `<p class="settings-empty" style="padding:20px;">No apps match “${query || ''}”.</p>`;
-                return;
-            }
-
-            filtered.forEach((app) => {
-                const row = document.createElement('div');
-                row.className = 'settings-app-row';
-
-                const checked = isAppExcluded(app.id);
-                const iconId = `app-icon-${app.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-
-                row.innerHTML = `
-                    <div class="settings-app-left">
-                        <div id="${iconId}" class="settings-app-icon-fallback">📦</div>
-                        <div style="min-width:0;">
-                            <div class="settings-app-name" title="${app.name}">${app.name}</div>
-                            <div class="settings-app-pub">${app.publisher || 'Unknown publisher'}</div>
-                        </div>
-                    </div>
-                    <label class="switch">
-                        <input type="checkbox" class="app-exclude-checkbox" ${checked ? 'checked' : ''} />
-                        <span class="slider"></span>
-                    </label>
-                `;
-
-                const checkbox = row.querySelector('.app-exclude-checkbox');
-                checkbox.onchange = (e) => toggleApp(app, e.target.checked);
-
-                appListContainer.appendChild(row);
-
-                // Load real icon async
-                resolveAppIcon(app).then((dataUrl) => {
-                    if (!dataUrl) return;
-                    const holder = document.getElementById(iconId);
-                    if (!holder) return;
-                    const img = document.createElement('img');
-                    img.className = 'settings-app-icon';
-                    img.src = dataUrl;
-                    img.alt = '';
-                    img.onerror = () => {};
-                    holder.replaceWith(img);
-                });
-            });
-        }
-
-        appSearchInput.oninput = renderAppList;
-
-        async function loadInstalledApps() {
-            appListContainer.innerHTML = `<p class="settings-empty" style="padding:24px;">Loading installed apps…</p>`;
-            const result = await ipcRenderer.invoke('get-installed-apps');
-            installedApps = (result && result.success) ? result.apps : [];
-            if (installedApps.length === 0) {
-                appListContainer.innerHTML = `<p class="settings-empty" style="padding:20px; color: var(--accent-red);">Could not read installed apps.</p>`;
-                return;
-            }
-            renderAppList();
-        }
-
-        function applySettingsToUI() {
-            toggleAutoConnect.checked = !!settings.autoConnectOnLaunch;
-            toggleLaunchOnStartup.checked = !!settings.launchOnStartup;
-            toggleKillSwitch.checked = !!settings.killSwitchEnabled;
-            toggleDnsProtection.checked = !!settings.dnsLeakProtection;
-
-            const dns = settings.customDnsServers || [];
-            dnsPrimaryInput.value = dns[0] || '';
-            dnsSecondaryInput.value = dns[1] || '';
-
-            renderWebsiteChips();
-        }
-
-        toggleAutoConnect.onchange = (e) => persist({ autoConnectOnLaunch: e.target.checked });
-        toggleLaunchOnStartup.onchange = (e) => persist({ launchOnStartup: e.target.checked });
-        toggleKillSwitch.onchange = (e) => persist({ killSwitchEnabled: e.target.checked });
-        toggleDnsProtection.onchange = (e) => persist({ dnsLeakProtection: e.target.checked });
-
-        saveDnsBtn.onclick = () => {
-            const servers = [dnsPrimaryInput.value.trim(), dnsSecondaryInput.value.trim()].filter(Boolean);
-            persist({ customDnsServers: servers });
-        };
-
-        (async () => {
-            const result = await ipcRenderer.invoke('get-app-settings');
-            settings = (result && result.success) ? result.settings : {
-                autoConnectOnLaunch: false,
-                launchOnStartup: false,
-                killSwitchEnabled: false,
-                dnsLeakProtection: true,
-                customDnsServers: [],
-                excludedApps: [],
-                excludedWebsites: []
-            };
-            applySettingsToUI();
-            loadInstalledApps();
-        })();
-
-        window.currentScreenCleanup = null;
+      } else {
+        toast(
+          (result && result.error) || 'Could not save settings.',
+          'error',
+          'Settings'
+        );
+      }
+      return result;
     }
+
+    function renderWebsiteChips() {
+      websiteChipList.innerHTML = '';
+      const sites = (settings && settings.excludedWebsites) || [];
+      websiteEmptyState.style.display = sites.length === 0 ? 'block' : 'none';
+
+      sites.forEach(function (site) {
+        const chip = document.createElement('div');
+        chip.className = 'settings-chip';
+        chip.innerHTML = '<span>' + site + '</span>';
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.innerText = '✕';
+        removeBtn.onclick = async function () {
+          const updated = sites.filter(function (s) {
+            return s !== site;
+          });
+          await persist({ excludedWebsites: updated });
+          renderWebsiteChips();
+          toast('Removed ' + site, 'info', 'Bypass websites');
+        };
+        chip.appendChild(removeBtn);
+        websiteChipList.appendChild(chip);
+      });
+    }
+
+    async function addWebsite() {
+      const raw = websiteInput.value
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .replace(/^www\./, '')
+        .replace(/\/.*$/, '');
+
+      if (!raw) return;
+      if (!DOMAIN_REGEX.test(raw)) {
+        toast('Enter a valid domain, e.g. netflix.com', 'error', 'Bypass website');
+        return;
+      }
+
+      const current = (settings && settings.excludedWebsites) || [];
+      if (current.includes(raw)) {
+        websiteInput.value = '';
+        toast('Domain already in the list.', 'info', 'Bypass website');
+        return;
+      }
+
+      await persist({ excludedWebsites: current.concat([raw]) });
+      websiteInput.value = '';
+      renderWebsiteChips();
+      toast('Added ' + raw, 'success', 'Bypass website');
+    }
+
+    addWebsiteBtn.onclick = addWebsite;
+    websiteInput.onkeydown = function (e) {
+      if (e.key === 'Enter') addWebsite();
+    };
+
+    function isAppExcluded(appId) {
+      return ((settings && settings.excludedApps) || []).some(function (a) {
+        return a.id === appId;
+      });
+    }
+
+    async function toggleApp(app, checked) {
+      const current = (settings && settings.excludedApps) || [];
+      const updated = checked
+        ? current.concat([
+            {
+              id: app.id,
+              name: app.name,
+              publisher: app.publisher,
+              installLocation: app.installLocation,
+              iconPath: app.iconPath,
+            },
+          ])
+        : current.filter(function (a) {
+            return a.id !== app.id;
+          });
+      await persist({ excludedApps: updated });
+      toast(
+        checked ? 'Bypass enabled for ' + app.name : 'Bypass removed for ' + app.name,
+        'info',
+        'Bypass apps'
+      );
+    }
+
+    function cleanIconPath(raw) {
+      if (!raw || typeof raw !== 'string') return null;
+      return raw.replace(/^"|"$/g, '').split(',')[0].trim() || null;
+    }
+
+    async function resolveAppIcon(app) {
+      const iconPath = cleanIconPath(app.iconPath);
+      if (!iconPath) return null;
+      if (Object.prototype.hasOwnProperty.call(iconCache, iconPath)) {
+        return iconCache[iconPath];
+      }
+      try {
+        const res = await ipcRenderer.invoke('get-app-icon', iconPath);
+        const dataUrl = res && res.success && res.dataUrl ? res.dataUrl : null;
+        iconCache[iconPath] = dataUrl;
+        return dataUrl;
+      } catch (e) {
+        iconCache[iconPath] = null;
+        return null;
+      }
+    }
+
+    function renderAppList() {
+      const query = appSearchInput.value.trim().toLowerCase();
+      const filtered = query
+        ? installedApps.filter(function (a) {
+            return (
+              a.name.toLowerCase().includes(query) ||
+              (a.publisher || '').toLowerCase().includes(query)
+            );
+          })
+        : installedApps;
+
+      appListContainer.innerHTML = '';
+
+      if (filtered.length === 0) {
+        appListContainer.innerHTML =
+          '<p class="settings-empty" style="padding:20px;">No apps match “' +
+          (query || '') +
+          '”.</p>';
+        return;
+      }
+
+      filtered.forEach(function (app) {
+        const row = document.createElement('div');
+        row.className = 'settings-app-row';
+
+        const checked = isAppExcluded(app.id);
+        const iconId = 'app-icon-' + app.id.replace(/[^a-zA-Z0-9_-]/g, '');
+
+        row.innerHTML =
+          '<div class="settings-app-left">' +
+          '<div id="' +
+          iconId +
+          '" class="settings-app-icon-fallback">📦</div>' +
+          '<div style="min-width:0;">' +
+          '<div class="settings-app-name" title="' +
+          app.name +
+          '">' +
+          app.name +
+          '</div>' +
+          '<div class="settings-app-pub">' +
+          (app.publisher || 'Unknown publisher') +
+          '</div>' +
+          '</div></div>' +
+          '<label class="switch">' +
+          '<input type="checkbox" class="app-exclude-checkbox" ' +
+          (checked ? 'checked' : '') +
+          ' />' +
+          '<span class="slider"></span>' +
+          '</label>';
+
+        const checkbox = row.querySelector('.app-exclude-checkbox');
+        checkbox.onchange = function (e) {
+          toggleApp(app, e.target.checked);
+        };
+
+        appListContainer.appendChild(row);
+
+        resolveAppIcon(app).then(function (dataUrl) {
+          if (!dataUrl) return;
+          const holder = document.getElementById(iconId);
+          if (!holder) return;
+          const img = document.createElement('img');
+          img.className = 'settings-app-icon';
+          img.src = dataUrl;
+          img.alt = '';
+          holder.replaceWith(img);
+        });
+      });
+    }
+
+    appSearchInput.oninput = renderAppList;
+
+    async function loadInstalledApps() {
+      appListContainer.innerHTML =
+        '<p class="settings-empty" style="padding:24px;">Loading installed apps…</p>';
+      const result = await ipcRenderer.invoke('get-installed-apps');
+      installedApps = result && result.success ? result.apps : [];
+      if (installedApps.length === 0) {
+        appListContainer.innerHTML =
+          '<p class="settings-empty" style="padding:20px; color: var(--accent-red);">Could not read installed apps.</p>';
+        toast('Could not read installed apps.', 'error', 'Bypass apps');
+        return;
+      }
+      renderAppList();
+    }
+
+    function applySettingsToUI() {
+      toggleAutoConnect.checked = !!settings.autoConnectOnLaunch;
+      toggleLaunchOnStartup.checked = !!settings.launchOnStartup;
+      toggleKillSwitch.checked = !!settings.killSwitchEnabled;
+      toggleDnsProtection.checked = !!settings.dnsLeakProtection;
+
+      const dns = settings.customDnsServers || [];
+      dnsPrimaryInput.value = dns[0] || '';
+      dnsSecondaryInput.value = dns[1] || '';
+
+      renderWebsiteChips();
+    }
+
+    toggleAutoConnect.onchange = function (e) {
+      persist({ autoConnectOnLaunch: e.target.checked });
+    };
+    toggleLaunchOnStartup.onchange = function (e) {
+      persist({ launchOnStartup: e.target.checked });
+    };
+    toggleKillSwitch.onchange = function (e) {
+      persist({ killSwitchEnabled: e.target.checked });
+    };
+    toggleDnsProtection.onchange = function (e) {
+      persist({ dnsLeakProtection: e.target.checked });
+    };
+
+    saveDnsBtn.onclick = async function () {
+      const servers = [dnsPrimaryInput.value.trim(), dnsSecondaryInput.value.trim()].filter(
+        Boolean
+      );
+      await persist({ customDnsServers: servers });
+      toast('DNS servers saved.', 'success', 'Settings');
+    };
+
+    (async function () {
+      const result = await ipcRenderer.invoke('get-app-settings');
+      settings =
+        result && result.success
+          ? result.settings
+          : {
+              autoConnectOnLaunch: false,
+              launchOnStartup: false,
+              killSwitchEnabled: false,
+              dnsLeakProtection: true,
+              customDnsServers: [],
+              excludedApps: [],
+              excludedWebsites: [],
+            };
+      applySettingsToUI();
+      loadInstalledApps();
+    })();
+
+    window.currentScreenCleanup = null;
+  },
 };
 
 module.exports = SettingsScreen;

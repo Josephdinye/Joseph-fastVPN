@@ -1,21 +1,20 @@
-import type { VPNNode } from './cache';
-import { NODE_POLICY } from './policy';
-import { reliabilityScore } from './reputation';
+// admin/src/lib/nodes/firewall.ts  (fix typo: was firewalll.ts)
 
+import type { VPNNode } from './cache';
+
+// For APP FRONTEND - ONLY check if you blocked it manually
+// NO status, NO securityScore, NO reliability check
 export function isNodeAllowed(node: VPNNode): boolean {
-  if (!node.enabled) return false;
-  if (node.status !== 'online') return false;
-  if (node.securityStatus !== 'approved') return false;
-  if (node.securityScore < NODE_POLICY.minSecurityScore) return false;
-  if (reliabilityScore(node.id) < NODE_POLICY.minReliabilityForSafeList) return false;
-  return true;
+  if (!node.enabled) return false; // you blocked it in dashboard
+  return true; // send everything else same as GitHub raw
 }
 
 export function filterSafeNodes(nodes: VPNNode[]): VPNNode[] {
   return nodes.filter(isNodeAllowed);
 }
 
-/** Client-facing fields — no raw upstream by default */
+// For ADMIN DASHBOARD - show raw + speed but sanitize for client
+// App gets raw vless:// string, not this object
 export function sanitizeNodeForClient(node: VPNNode) {
   return {
     id: node.id,
@@ -23,8 +22,19 @@ export function sanitizeNodeForClient(node: VPNNode) {
     flag: node.flag,
     iso: node.iso,
     subtitle: node.subtitle,
-    status: node.status,
-    latency: node.latency,
+    status: node.status, // for dashboard only
+    latency: node.latency, // for dashboard only
+    speedMbps: node.speedMbps, // for dashboard only
     score: node.score,
+    enabled: node.enabled, // for block toggle
+    raw: node.raw, // app needs this
   };
+}
+
+// Separate function for your admin dashboard if you want to show "Safe" badge
+// This is ONLY for UI, not for filtering app nodes
+export function isNodeSafeForBadge(node: VPNNode): boolean {
+  if (node.securityStatus === 'blocked') return false;
+  if (node.securityScore < 50) return false;
+  return true;
 }

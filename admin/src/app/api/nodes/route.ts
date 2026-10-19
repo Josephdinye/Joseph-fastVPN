@@ -1,7 +1,7 @@
-// admin/src/app/api/nodes/route.ts
+// admin/src/app/api/nodes/route.ts - ADMIN DASHBOARD
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, AuthError } from '@/lib/auth';
-import { getNodeCache, applyBlocks } from '@/lib/nodes/cache';
+import { getNodeCache } from '@/lib/nodes/cache';
 
 export async function GET(req: NextRequest) {
   try {
@@ -9,60 +9,54 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const onlyOnline = searchParams.get('online') === '1';
-    const excludeRf = searchParams.get('excludeRf') !== '0';
-    const onlyEnabled = searchParams.get('enabled') === '1';
+    const onlyBlocked = searchParams.get('blocked') === '1';
     const limit = Math.min(Number(searchParams.get('limit') || 2000), 5000);
 
     const cache = getNodeCache();
-    let nodes = applyBlocks(cache.nodes);
+    let nodes = [...cache.nodes];
 
-    if (excludeRf) nodes = nodes.filter((n) => !n.isRussia);
-    if (onlyOnline) nodes = nodes.filter((n) => n.status === 'online');
-    if (onlyEnabled) nodes = nodes.filter((n) => n.enabled !== false);
+    // Filters for UI only - never hide countries by default
+    if (onlyOnline) nodes = nodes.filter(n => n.status === 'online');
+    if (onlyBlocked) nodes = nodes.filter(n => !n.enabled);
+
+    nodes.sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return (a.latency ?? 99999) - (b.latency ?? 99999);
+    });
 
     nodes = nodes.slice(0, limit);
 
     return NextResponse.json({
       success: true,
-      nodes: nodes.map((n) => ({
+      nodes: nodes.map(n => ({
         id: n.id,
         name: n.name,
         flag: n.flag,
         iso: n.iso,
         subtitle: n.subtitle,
-        countIndex: n.countIndex,
-        isRussia: n.isRussia,
-        protocol: n.protocol,
-        status: n.status,
-        ping: n.latency,
-        latency: n.latency,
-        score: n.score,
-        failReason: n.failReason,
-        lastTestedAt: n.lastChecked ? Date.parse(n.lastChecked) : null,
-        enabled: n.enabled !== false,
-        rawConfig: n.raw,
-        host: n.address,
+        address: n.address,
         port: n.port,
-        transportSecurity: n.transportSecurity,
+        status: n.status,
+        latency: n.latency,
         securityStatus: n.securityStatus,
         securityScore: n.securityScore,
-        securityReasons: n.securityReasons,
+        securityReasons: n.securityReasons, // Detail column comment only
+        enabled: n.enabled !== false,
+        raw: n.raw,
       })),
       count: nodes.length,
+      totalNodes: cache.nodes.length,
+      onlineNodes: cache.nodes.filter(n => n.status === 'online').length,
+      enabledNodes: cache.nodes.filter(n => n.enabled).length,
+      blockedNodes: cache.nodes.filter(n => !n.enabled).length,
       updatedAt: cache.updatedAt,
       cycle: cache.cycle,
       testing: cache.testing,
-      totalNodes: cache.nodes.length,
-      onlineNodes: cache.nodes.filter((n) => n.status === 'online').length,
     });
   } catch (err) {
     if (err instanceof AuthError) {
       return NextResponse.json({ success: false, error: err.message }, { status: err.status });
     }
-    console.error('/api/nodes GET error', err);
-    return NextResponse.json(
-      { success: false, error: (err as any)?.message || String(err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: (err as any)?.message || String(err) }, { status: 500 });
   }
 }

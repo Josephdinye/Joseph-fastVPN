@@ -18,29 +18,27 @@
       "settings": {
         "vnext": [
           {
-            "address": "md5.univesalsrv.com",
-            "port": 443,
+            "address": "31.58.50.200",
+            "port": 8443,
             "users": [
               {
-                "id": "2f35965a-9a9b-45fd-ba32-987296dfb6be",
-                "encryption": "none"
+                "id": "a9dae5b2-ac94-417f-b3dd-882a3d7a6a85",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
               }
             ]
           }
         ]
       },
       "streamSettings": {
-        "network": "grpc",
+        "network": "tcp",
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "fingerprint": "chrome",
-          "serverName": "md5.univesalsrv.com",
-          "publicKey": "99MRki6b93wC-hhDHe9yq3IXE3KtPGw4RkFAnpI-8gg",
-          "shortId": "aa9884f2982b7d3c"
-        },
-        "grpcSettings": {
-          "serviceName": "app.v1.PushService"
+          "fingerprint": "firefox",
+          "serverName": "tradingview.com",
+          "publicKey": "mr5AF0LFyDzYDRoYAwH6QNcHXL77-LoiwRx50ZzU8QU",
+          "shortId": ""
         }
       }
     }

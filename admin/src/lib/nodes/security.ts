@@ -1,3 +1,4 @@
+// admin/src/lib/nodes/security.ts - COMMENT ONLY, never auto-block
 import net from 'net';
 import type { VPNNode } from './cache';
 
@@ -25,6 +26,7 @@ function isPrivateOrForbiddenIp(ip: string): boolean {
   return false;
 }
 
+// For ADMIN DASHBOARD badge + Detail comment only
 export function inspectNode(node: VPNNode): SecurityResult {
   const reasons: string[] = [];
   let score = 100;
@@ -44,24 +46,43 @@ export function inspectNode(node: VPNNode): SecurityResult {
     return { status: 'blocked', score: 0, reasons: ['Private/metadata IP forbidden'] };
   }
 
+  // FIX: only comment, small penalty - so it stays approved/suspicious, not blocked
   if (node.allowInsecure) {
-    score -= 100;
+    score -= 15; // was 100 -> now 15, so 100-15=85 = approved/suspicious
     reasons.push('Insecure TLS verification');
   }
 
   if (node.transportSecurity === 'none' || node.transportSecurity === 'unknown') {
-    score -= 100;
+    score -= 10; // was 100 -> now 10
     reasons.push('No REALITY/TLS transport security');
   } else if (node.transportSecurity === 'tls') {
-    score -= 5;
+    score -= 2;
+    reasons.push('TLS only (no REALITY)'); // optional comment
   }
 
   if (node.transportSecurity === 'reality' && !node.hasRealityKey) {
-    score -= 80;
+    score -= 20; // was 80 -> now 20
     reasons.push('REALITY without public key');
+  }
+
+  // Remove empty TLS comment if you want cleaner Detail
+  if (reasons.length === 1 && reasons[0].includes('TLS only')) {
+    reasons.length = 0;
+    score = 100;
   }
 
   if (score <= 0) return { status: 'blocked', score: 0, reasons };
   if (score < 80) return { status: 'suspicious', score, reasons };
   return { status: 'approved', score, reasons };
+}
+
+export function enrichNodeWithSecurity(node: VPNNode): VPNNode {
+  const result = inspectNode(node);
+  return {
+    ...node,
+    securityStatus: result.status,
+    securityScore: result.score,
+    securityReasons: result.reasons,
+    enabled: true, // FORCE: all countries available, never auto-blocked
+  };
 }

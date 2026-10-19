@@ -1,141 +1,79 @@
-// admin/src/lib/nodes/worker.ts
+// admin/src/lib/nodes/worker.ts - WEB VERSION - NO XRAY BINARY
 import { downloadNodeFeed } from './feed';
 import { parseVlessNodes } from './parser';
-import { validateNode } from './validator';
 import { inspectNode } from './security';
-import { testNode } from './tester';
-import { rankNodes } from './ranker';
-import { recordTestResult } from './reputation';
 import type { VPNNode } from './cache';
-import {
-  setNodeCache,
-  setNodeTesting,
-  setNodeError,
-  applyBlocks,
-} from './cache';
+import { getNodeCache, setNodeCache, setNodeTesting, setNodeError, isNodeBlocked, updateNodeTestResult } from './cache';
+import net from 'net';
 
-let running = false;
-let intervalStarted = false;
+const TIMEOUT = Number(process.env.NODE_TEST_TIMEOUT || 5000);
 
-/** One entry per fingerprint/id — prefer online + lower latency */
-function dedupeById(nodes: VPNNode[]): VPNNode[] {
-  const map = new Map<string, VPNNode>();
-
-  for (const n of nodes) {
-    const prev = map.get(n.id);
-    if (!prev) {
-      map.set(n.id, n);
-      continue;
-    }
-
-    if (n.status === 'online' && prev.status !== 'online') {
-      map.set(n.id, n);
-      continue;
-    }
-
-    if (n.status === prev.status) {
-      const nLat = n.latency ?? 99999;
-      const pLat = prev.latency ?? 99999;
-      if (nLat < pLat) {
-        map.set(n.id, n);
-        continue;
-      }
-      if (nLat === pLat && (n.score ?? 0) > (prev.score ?? 0)) {
-        map.set(n.id, n);
-      }
-    }
-  }
-
-  return Array.from(map.values());
-}
-
-function publishCache(nodes: VPNNode[]) {
-  const ranked = applyBlocks(rankNodes(dedupeById(nodes)));
-  setNodeCache(ranked);
-  return ranked;
+function tcpPing(host: string, port: number): Promise<{ online: boolean, latency: number }> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const socket = new net.Socket();
+    let done = false;
+    const finish = (online: boolean) => {
+      if (done) return;
+      done = true;
+      const latency = Date.now() - start;
+      try { socket.destroy(); } catch {}
+      resolve({ online, latency });
+    };
+    socket.setTimeout(TIMEOUT);
+    socket.on('connect', () => finish(true));
+    socket.on('timeout', () => finish(false));
+    socket.on('error', () => finish(false));
+    try { socket.connect(port, host); } catch { finish(false); }
+  });
 }
 
 export async function refreshNodes() {
-  if (running) {
-    console.log('[Nodes] Previous cycle still running');
-    return;
-  }
-
-  running = true;
   setNodeTesting(true);
-
   try {
-    console.log('[Nodes] Starting health cycle');
+    const raw = await downloadNodeFeed();
+    const parsed = parseVlessNodes(raw) as unknown as VPNNode[];
 
-    const feed = await downloadNodeFeed();
-    const parsed = parseVlessNodes(feed);
-    console.log(`[Nodes] Parsed ${parsed.length} links`);
-
-    const validated = parsed.filter((n) => validateNode(n).valid);
-    console.log(`[Nodes] Valid: ${validated.length}`);
-
-    const inspected = validated.map((node) => {
-      const security = inspectNode(node);
-      return {
-        ...node,
-        securityStatus: security.status,
-        securityScore: security.score,
-        securityReasons: security.reasons,
-      };
+    // Security badge for dashboard only
+    const enriched = parsed.map(n => {
+      const sec = inspectNode(n as any);
+      return { ...n, securityStatus: sec.status, securityScore: sec.score, securityReasons: sec.reasons };
     });
 
-    // Dedupe before testing so we don't probe the same id twice
-    const uniqueInspected = dedupeById(inspected);
-    console.log(`[Nodes] Unique after fingerprint: ${uniqueInspected.length}`);
+    // Preserve manual blocks from this cache.ts
+    const finalNodes = enriched.map(n => ({
+      ...n,
+      enabled: !isNodeBlocked(n.id) && (n as any).enabled !== false
+    }));
 
-    const testable = uniqueInspected.filter((n) => n.securityStatus === 'approved');
-    console.log(`[Nodes] Approved for test: ${testable.length}`);
+    setNodeCache(finalNodes as any);
+    console.log(`[Nodes] Published ${finalNodes.length} nodes for app (same as GitHub minus ${finalNodes.filter(n=>!n.enabled).length} blocked)`);
 
-    for (let i = testable.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [testable[i], testable[j]] = [testable[j], testable[i]];
+    // Background TCP test for dashboard only - works on Vercel/web
+    const concurrency = 50;
+    for (let i = 0; i < finalNodes.length; i += concurrency) {
+      const batch = finalNodes.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map(async (n) => {
+        const { online, latency } = await tcpPing(n.address, n.port);
+        return { id: n.id, status: online ? 'online' as const : 'offline' as const, latency: online ? latency : null, failReason: online ? null : `TCP ${n.address}:${n.port} unreachable` };
+      }));
+      results.forEach(r => updateNodeTestResult(r.id, { status: r.status, latency: r.latency, failReason: r.failReason } as any));
     }
 
-    const concurrency = Number(process.env.NODE_TEST_CONCURRENCY || 80);
-    const results: VPNNode[] = [];
-    const rejected = uniqueInspected.filter((n) => n.securityStatus !== 'approved');
+    const cache = getNodeCache();
+    console.log(`[Nodes] Cycle ${cache.cycle}: ${cache.nodes.filter(n=>n.status==='online').length} online / ${cache.nodes.length} total`);
 
-    for (let i = 0; i < testable.length; i += concurrency) {
-      const batch = testable.slice(i, i + concurrency);
-      const batchResults = await Promise.all(batch.map(testNode));
-
-      for (const r of batchResults) {
-        recordTestResult(r.id, r.status === 'online');
-      }
-
-      results.push(...batchResults);
-      publishCache([...results, ...rejected]);
-
-      console.log(
-        `[Nodes] Tested ${Math.min(i + concurrency, testable.length)}/${testable.length}`
-      );
-    }
-
-    const ranked = publishCache([...results, ...rejected]);
-    const online = ranked.filter((n) => n.status === 'online').length;
-    console.log(`[Nodes] Cycle complete: ${online} online / ${ranked.length} total`);
-  } catch (error: any) {
-    console.error('[Nodes] Cycle failed:', error);
-    setNodeError(error?.message || String(error));
+  } catch (e: any) {
+    console.error('[Nodes] refresh failed', e);
+    setNodeError(e.message);
   } finally {
     setNodeTesting(false);
-    running = false;
   }
 }
 
 export function startNodeWorker() {
-  if (intervalStarted) return;
-  intervalStarted = true;
-
-  const interval = Number(process.env.NODE_TEST_INTERVAL || 300000);
   void refreshNodes();
-  setInterval(() => {
-    void refreshNodes();
-  }, interval);
-  console.log(`[Nodes] Worker scheduled every ${interval / 1000}s`);
+  const interval = Number(process.env.NODE_TEST_INTERVAL || 300000);
+  setInterval(() => void refreshNodes(), interval);
+  console.log(`[Nodes] Worker scheduled every ${interval/1000}s`);
 }

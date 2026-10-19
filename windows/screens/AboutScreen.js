@@ -1,5 +1,8 @@
+const { toast, runUpdateCheck } = require('../ui-notify');
+
 const AboutScreen = {
-    render: () => `
+  render: function () {
+    return `
         <div class="screen active fade-in" id="aboutRoot">
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
                 <div>
@@ -8,23 +11,24 @@ const AboutScreen = {
                 </div>
             </div>
 
-            <!-- App identity -->
             <section class="card about-section">
                 <div class="about-hero">
                     <div class="about-logo">🛡️</div>
                     <div class="about-hero-text">
                         <h3 class="about-app-name">Joseph FastVPN</h3>
-                        <p class="about-version">Version 1.0.0 · Desktop</p>
+                        <p class="about-version" id="aboutVersionLabel">Version … · Desktop</p>
                     </div>
                 </div>
                 <p class="about-body">
-                    A personal desktop VPN client built for learning and everyday use.
-                    It loads remote configurations, tests real connectivity, and routes traffic
-                    through the fastest working node.
+                    Desktop VPN client for Joseph FastVPN. The server list and health checks come from the backend;
+                    traffic is routed locally through Xray on the fastest approved node.
                 </p>
+                <button type="button" id="checkUpdateBtn" class="native-btn-secondary" style="font-size:12px; padding:8px 14px; border-radius:8px;">
+                    Check for updates
+                </button>
+                <p id="aboutUpdateStatus" style="margin:10px 0 0; font-size:12px; color:var(--text-muted);"></p>
             </section>
 
-            <!-- Developer -->
             <section class="card about-section">
                 <div class="about-section-head">
                     <div class="about-section-icon">👤</div>
@@ -51,7 +55,6 @@ const AboutScreen = {
                 </div>
             </section>
 
-            <!-- Contact -->
             <section class="card about-section about-section-last">
                 <div class="about-section-head">
                     <div class="about-section-icon">✉️</div>
@@ -85,7 +88,6 @@ const AboutScreen = {
                     border-radius: 14px;
                 }
                 #aboutRoot .about-section-last { margin-bottom: 8px; }
-
                 #aboutRoot .about-hero {
                     display: flex;
                     align-items: center;
@@ -112,7 +114,6 @@ const AboutScreen = {
                     font-size: 12px;
                     color: var(--text-muted);
                 }
-
                 #aboutRoot .about-section-head {
                     display: flex;
                     align-items: flex-start;
@@ -140,7 +141,6 @@ const AboutScreen = {
                     color: var(--text-muted);
                     line-height: 1.35;
                 }
-
                 #aboutRoot .about-body {
                     margin: 0 0 12px 0;
                     font-size: 13px;
@@ -148,7 +148,6 @@ const AboutScreen = {
                     color: var(--text-main);
                     opacity: 0.92;
                 }
-
                 #aboutRoot .about-links {
                     display: flex;
                     flex-direction: column;
@@ -181,7 +180,6 @@ const AboutScreen = {
                     font-weight: 600;
                     color: #60a5fa;
                 }
-
                 #aboutRoot .about-note {
                     margin: 12px 0 0 0;
                     font-size: 11.5px;
@@ -190,10 +188,41 @@ const AboutScreen = {
                 }
             </style>
         </div>
-    `,
-    init: (ipcRenderer, appState) => {
-        // Static screen
-    }
+    `;
+  },
+
+  init: function (ipcRenderer) {
+    const label = document.getElementById('aboutVersionLabel');
+    const status = document.getElementById('aboutUpdateStatus');
+    const btn = document.getElementById('checkUpdateBtn');
+
+    ipcRenderer.invoke('get-app-version').then(function (r) {
+      if (label && r && r.version) {
+        label.textContent = 'Version ' + r.version + ' · Desktop';
+      }
+    });
+
+    btn.onclick = async function () {
+      status.textContent = 'Checking…';
+      const info = await ipcRenderer.invoke('check-app-update');
+      if (!info || !info.success) {
+        status.textContent = '';
+        toast(info && info.error ? info.error : 'Could not check for updates.', 'error', 'Updates');
+        return;
+      }
+      if (info.updateAvailable) {
+        status.textContent = 'Update available: v' + info.latestVersion;
+        await runUpdateCheck(ipcRenderer);
+      } else {
+        status.textContent = '';
+        toast(
+          'You are on the latest version (v' + info.currentVersion + ').',
+          'success',
+          'Updates'
+        );
+      }
+    };
+  },
 };
 
 module.exports = AboutScreen;
